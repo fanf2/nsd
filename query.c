@@ -1534,13 +1534,8 @@ query_process(query_type *q, nsd_type *nsd)
 	STATUP2(nsd, qclass, q->qclass);
 
 	if (q->opcode != OPCODE_QUERY) {
-		if (q->opcode == OPCODE_NOTIFY) {
-			return answer_notify(nsd, q);
-		} else {
-			if(query_ratelimit_err(nsd))
-				return QUERY_DISCARDED;
-			return query_error(q, NSD_RC_IMPL);
-		}
+		assert(q->opcode == OPCODE_NOTIFY);
+		return answer_notify(nsd, q);
 	}
 
 	/* Dont bother to answer more than one question at once... */
