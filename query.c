@@ -1499,7 +1499,6 @@ query_process(query_type *q, nsd_type *nsd)
 {
 	/* The query... */
 	nsd_rc_type rc;
-	query_state_type query_state;
 	uint16_t arcount;
 
 	/* Sanity checks */
@@ -1659,9 +1658,8 @@ query_process(query_type *q, nsd_type *nsd)
 			return query_error(q, RCODE_REFUSE);
 		}
 	}
-	query_state = answer_axfr_ixfr(nsd, q);
-	if (query_state == QUERY_PROCESSED || query_state == QUERY_IN_AXFR) {
-		return query_state;
+	if(q->qtype == TYPE_AXFR || q->qtype == TYPE_IXFR) {
+		return answer_axfr_ixfr(nsd, q);
 	}
 	if(q->qtype == TYPE_ANY && nsd->options->refuse_any && !q->tcp) {
 		TC_SET(q->packet);

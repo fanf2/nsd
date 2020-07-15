@@ -222,6 +222,7 @@ answer_axfr_ixfr(struct nsd *nsd, struct query *q)
 		RCODE_SET(q->packet, RCODE_IMPL);
 		return QUERY_PROCESSED;
 	default:
+		assert(q->qtype == TYPE_AXFR || q->qtype == TYPE_IXFR);
 		return QUERY_DISCARDED;
 	}
 }
