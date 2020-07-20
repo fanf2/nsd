@@ -30,6 +30,7 @@
 /nsd.conf.sample
 /nsd-mem
 /cutest
+/*treeperf
 /popen3_echo
 /udb-inspect
 /xfr-inspect
