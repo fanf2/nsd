@@ -506,14 +506,28 @@ static void set_bind8_alarm(struct nsd* nsd)
 #endif
 
 /* set zone stat ids for zones initially read in */
+#if defined(USE_QP_TRIE)
+static void
+zonestatid_tree_set_fn(void *ptr, void *ctx)
+{
+	zone_type *zone = ptr;
+	struct nsd *nsd = ctx;
+	zone->zonestatid = getzonestatid(nsd->options, zone->opts);
+}
+#endif
+
 static void
 zonestatid_tree_set(struct nsd* nsd)
 {
+#if defined(USE_QP_TRIE)
+	qp_foreach(&nsd->db->zonetree.root, zonestatid_tree_set_fn, nsd);
+#else
 	struct radnode* n;
 	for(n=radix_first(nsd->db->zonetree); n; n=radix_next(n)) {
 		zone_type* zone = (zone_type*)n->elem;
 		zone->zonestatid = getzonestatid(nsd->options, zone->opts);
 	}
+#endif
 }
 
 #ifdef USE_ZONE_STATS
@@ -1646,17 +1660,43 @@ server_start_xfrd(struct nsd *nsd, int del_db, int reload_active)
 }
 
 /** add all soainfo to taskdb */
+#if defined(USE_QP_TRIE)
+static void
+add_all_soa_to_task_fn(void *ptr, void *ctx)
+{
+	zone_type *zone = ptr;
+	struct {
+		struct udb_base* taskudb;
+		udb_ptr *task_last;
+	} *t = ctx;
+	task_new_soainfo(t->taskudb, t->task_last, zone, 0);
+}
+#endif
+
 static void
 add_all_soa_to_task(struct nsd* nsd, struct udb_base* taskudb)
 {
-	struct radnode* n;
 	udb_ptr task_last; /* last task, mytask is empty so NULL */
 	/* add all SOA INFO to mytask */
+
+#if defined(USE_QP_TRIE)
+	struct {
+		struct udb_base* taskudb;
+		udb_ptr *task_last;
+	} ctx = { taskudb , &task_last };
+
+	udb_ptr_init(&task_last, taskudb);
+	qp_foreach(&nsd->db->zonetree.root, add_all_soa_to_task_fn, &ctx);
+	udb_ptr_unlink(&task_last, taskudb);
+#else
+	struct radnode* n;
+
 	udb_ptr_init(&task_last, taskudb);
 	for(n=radix_first(nsd->db->zonetree); n; n=radix_next(n)) {
 		task_new_soainfo(taskudb, &task_last, (zone_type*)n->elem, 0);
 	}
 	udb_ptr_unlink(&task_last, taskudb);
+#endif
 }
 
 void

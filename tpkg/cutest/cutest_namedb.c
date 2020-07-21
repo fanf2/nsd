@@ -121,81 +121,105 @@ nsec3last(zone_type* zone)
 
 /* walk zones and check them */
 static void
+check_walkzones_fn(void *val, void *ctx)
+{
+	zone_type* zone = val;
+	CuTest* tc = ctx;
+	CuAssertTrue(tc, zone->apex != NULL);
+	CuAssertTrue(tc, zone->opts != NULL);
+	/* options are for this zone */
+	CuAssertTrue(tc, strcmp(dname_to_string(domain_dname(
+		zone->apex), NULL), zone->opts->name) == 0);
+	/* either: the zone is servfail (nothing), and no SOA, ...
+	 * or: it exists and has a SOA, NS, ... */
+	if(zone->is_ok) {
+		/* check soa_rrset */
+		CuAssertTrue(tc, zone->soa_rrset != NULL);
+		CuAssertTrue(tc, zone->soa_nx_rrset != NULL);
+		CuAssertTrue(tc, zone->soa_rrset ==
+			domain_find_rrset(zone->apex, zone, TYPE_SOA));
+		CuAssertTrue(tc, zone->apex->is_existing);
+		CuAssertTrue(tc, zone->apex->is_apex);
+		/* if NS */
+		CuAssertTrue(tc, zone->ns_rrset ==
+			domain_find_rrset(zone->apex, zone, TYPE_NS));
+		/* if RRSIG then secure */
+		if(domain_find_rrset(zone->apex, zone, TYPE_RRSIG)) {
+			CuAssertTrue(tc, zone->is_secure);
+		} else {
+			CuAssertTrue(tc, !zone->is_secure);
+		}
+		/* if NSEC3PARAM then nsec3 */
+#ifdef NSEC3
+		if(domain_find_rrset(zone->apex, zone,
+			TYPE_NSEC3PARAM)) {
+			CuAssertTrue(tc, zone->nsec3_param != NULL);
+			CuAssertTrue(tc, zone->nsec3_param->type ==
+				TYPE_NSEC3PARAM);
+			CuAssertTrue(tc, zone->nsec3_param->owner ==
+				zone->apex);
+			if(zone->nsec3_last) {
+				CuAssertTrue(tc, domain_find_rrset(
+					zone->nsec3_last, zone,
+					TYPE_NSEC3) != NULL);
+				/* check that last nsec3, is last */
+				CuAssertTrue(tc, nsec3last(zone));
+			}
+		} else {
+			CuAssertTrue(tc, zone->nsec3_param == NULL);
+			CuAssertTrue(tc, zone->nsec3_last == NULL);
+		}
+#endif /* NSEC3 */
+	} else {
+		CuAssertTrue(tc, zone->soa_rrset == NULL);
+		/*CuAssertTrue(tc, zone->soa_nx_rrset == NULL);
+		  alloc saved for later update */
+		/*CuAssertTrue(tc, zone->ns_rrset == NULL);*/
+#ifdef NSEC3
+		/*CuAssertTrue(tc, zone->nsec3_param == NULL);
+		CuAssertTrue(tc, zone->nsec3_last == NULL);*/
+#endif /* NSEC3 */
+		/*CuAssertTrue(tc, !zone->apex->is_existing);*/
+	}
+}
+static void
 check_walkzones(CuTest* tc, namedb_type* db)
 {
+#if defined(USE_QP_TRIE)
+	qp_foreach(&db->zonetree.root, check_walkzones_fn, tc);
+#else
 	struct radnode* n;
 	for(n=radix_first(db->zonetree); n; n=radix_next(n)) {
-		zone_type* zone = (zone_type*)n->elem;
-		CuAssertTrue(tc, zone->apex != NULL);
-		CuAssertTrue(tc, zone->opts != NULL);
-		/* options are for this zone */
-		CuAssertTrue(tc, strcmp(dname_to_string(domain_dname(
-			zone->apex), NULL), zone->opts->name) == 0);
-		/* either: the zone is servfail (nothing), and no SOA, ...
-		 * or: it exists and has a SOA, NS, ... */
-		if(zone->is_ok) {
-			/* check soa_rrset */
-			CuAssertTrue(tc, zone->soa_rrset != NULL);
-			CuAssertTrue(tc, zone->soa_nx_rrset != NULL);
-			CuAssertTrue(tc, zone->soa_rrset ==
-				domain_find_rrset(zone->apex, zone, TYPE_SOA));
-			CuAssertTrue(tc, zone->apex->is_existing);
-			CuAssertTrue(tc, zone->apex->is_apex);
-			/* if NS */
-			CuAssertTrue(tc, zone->ns_rrset ==
-				domain_find_rrset(zone->apex, zone, TYPE_NS));
-			/* if RRSIG then secure */
-			if(domain_find_rrset(zone->apex, zone, TYPE_RRSIG)) {
-				CuAssertTrue(tc, zone->is_secure);
-			} else {
-				CuAssertTrue(tc, !zone->is_secure);
-			}
-			/* if NSEC3PARAM then nsec3 */
-#ifdef NSEC3
-			if(domain_find_rrset(zone->apex, zone,
-				TYPE_NSEC3PARAM)) {
-				CuAssertTrue(tc, zone->nsec3_param != NULL);
-				CuAssertTrue(tc, zone->nsec3_param->type ==
-					TYPE_NSEC3PARAM);
-				CuAssertTrue(tc, zone->nsec3_param->owner ==
-					zone->apex);
-				if(zone->nsec3_last) {
-					CuAssertTrue(tc, domain_find_rrset(
-						zone->nsec3_last, zone,
-						TYPE_NSEC3) != NULL);
-					/* check that last nsec3, is last */
-					CuAssertTrue(tc, nsec3last(zone));
-				}
-			} else {
-				CuAssertTrue(tc, zone->nsec3_param == NULL);
-				CuAssertTrue(tc, zone->nsec3_last == NULL);
-			}
-#endif /* NSEC3 */
-		} else {
-			CuAssertTrue(tc, zone->soa_rrset == NULL);
-			/*CuAssertTrue(tc, zone->soa_nx_rrset == NULL);
-			  alloc saved for later update */
-			/*CuAssertTrue(tc, zone->ns_rrset == NULL);*/
-#ifdef NSEC3
-			/*CuAssertTrue(tc, zone->nsec3_param == NULL);
-			CuAssertTrue(tc, zone->nsec3_last == NULL);*/
-#endif /* NSEC3 */
-			/*CuAssertTrue(tc, !zone->apex->is_existing);*/
-		}
+		check_walkzones_fn(n->elem, tc);
 	}
+#endif
 }
 
 /** set usage for zones */
+#if defined(USE_QP_TRIE)
+static void
+usage_for_zones_fn(void *val, void *ctx)
+{
+	zone_type* zone = val;
+	size_t* usage = ctx;
+	usage[zone->apex->number]++;
+}
+#endif
+
 static void
 usage_for_zones(namedb_type* db, size_t* usage)
 {
+#if defined(USE_QP_TRIE)
+	qp_foreach(&db->zonetree.root, usage_for_zones_fn, usage);
+#else
 	struct radnode* n;
 	for(n=radix_first(db->zonetree); n; n=radix_next(n)) {
 		zone_type* zone = (zone_type*)n->elem;
 		usage[zone->apex->number]++;
 	}
+#endif
 }
-	
+
 /** find wildcard under a name or NULL */
 static domain_type*
 find_wc_under(namedb_type* db, domain_type* d)

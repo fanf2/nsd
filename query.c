@@ -597,12 +597,8 @@ find_covering_nsec(domain_type *closest_match,
 	assert(closest_match);
 	assert(nsec_rrset);
 
-	/* loop away temporary created domains. For real ones it is &RBTREE_NULL */
-#ifdef USE_RADIX_TREE
-	while (closest_match->rnode == NULL)
-#else
-	while (closest_match->node.parent == NULL)
-#endif
+	/* loop away temporary created domains */
+	while (closest_match->is_temporary)
 		closest_match = closest_match->parent;
 	while (closest_match) {
 		*nsec_rrset = domain_find_rrset(closest_match, zone, TYPE_NSEC);
@@ -680,11 +676,14 @@ add_additional_rrsets(struct query *query, answer_type *answer,
 				query->region, sizeof(domain_type));
 #ifdef USE_RADIX_TREE
 			temp->rnode = NULL;
+                        temp->dname = additional->dname;
+#elif defined(USE_QP_TRIE)
 			temp->dname = additional->dname;
 #else
 			memcpy(&temp->node, &additional->node, sizeof(rbnode_type));
 			temp->node.parent = NULL;
 #endif
+			temp->is_temporary = 1;
 			temp->number = additional->number;
 			temp->parent = match;
 			temp->wildcard_child_closest_match = temp;
@@ -813,8 +812,11 @@ query_synthesize_cname(struct query* q, struct answer* answer, const dname_type*
 		if(!newdom)
 			return 0;
 		newdom->is_existing = 1;
+		newdom->is_temporary = 1;
 		newdom->parent = lastparent;
 #ifdef USE_RADIX_TREE
+		newdom->dname
+#elif defined(USE_QP_TRIE)
 		newdom->dname
 #else
 		newdom->node.key
@@ -840,8 +842,11 @@ query_synthesize_cname(struct query* q, struct answer* answer, const dname_type*
 		if(!newdom)
 			return 0;
 		newdom->is_existing = 0;
+		newdom->is_temporary = 1;
 		newdom->parent = lastparent;
 #ifdef USE_RADIX_TREE
+		newdom->dname
+#elif defined(USE_QP_TRIE)
 		newdom->dname
 #else
 		newdom->node.key
@@ -1190,10 +1195,13 @@ answer_authoritative(struct nsd   *nsd,
 #ifdef USE_RADIX_TREE
 		match->rnode = NULL;
 		match->dname = wildcard_child->dname;
+#elif defined(USE_QP_TRIE)
+		match->dname = wildcard_child->dname;
 #else
 		memcpy(&match->node, &wildcard_child->node, sizeof(rbnode_type));
 		match->node.parent = NULL;
 #endif
+		match->is_temporary = 1;
 		match->parent = closest_encloser;
 		match->wildcard_child_closest_match = match;
 		match->number = domain_number;

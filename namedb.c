@@ -35,12 +35,17 @@ allocate_domain_info(domain_table_type* table,
 					      sizeof(domain_type));
 #ifdef USE_RADIX_TREE
 	result->dname 
+#elif defined(USE_QP_TRIE)
+	result->dname
 #else
 	result->node.key
 #endif
 		= dname_partial_copy(
 		table->region, dname, domain_dname(parent)->label_count + 1);
 	result->parent = parent;
+#if defined(USE_QP_TRIE)
+	result->prev = result->next = NULL;
+#endif
 	result->wildcard_child_closest_match = result;
 	result->rrsets = NULL;
 	result->usage = 0;
@@ -49,6 +54,7 @@ allocate_domain_info(domain_table_type* table,
 #endif
 	result->is_existing = 0;
 	result->is_apex = 0;
+	result->is_temporary = 0;
 	assert(table->numlist_last); /* it exists because root exists */
 	/* push this domain at the end of the numlist */
 	result->number = table->numlist_last->number+1;
@@ -215,6 +221,10 @@ prehash_del(domain_table_type* table, domain_type* domain)
 static void
 do_deldomain(namedb_type* db, domain_type* domain)
 {
+#if defined(USE_QP_TRIE)
+	domain_type *prev, *next;
+#endif
+
 	assert(domain && domain->parent); /* exists and not root */
 	/* first adjust the number list so that domain is the last one */
 	numlist_make_last(db->domains, domain);
@@ -267,6 +277,13 @@ do_deldomain(namedb_type* db, domain_type* domain)
 	/* actual removal */
 #ifdef USE_RADIX_TREE
 	radix_delete(db->domains->nametree, domain->rnode);
+#elif defined(USE_QP_TRIE)
+	prev = domain_previous(domain);
+	next = domain_next(domain);
+	if(prev != NULL) prev->next = next;
+	if(next != NULL) next->prev = prev;
+	domain->prev = domain->next = NULL;
+	qp_del(&db->domains->nametree, domain_dname(domain));
 #else
 	rbtree_delete(db->domains->names_to_domains, domain->node.key);
 #endif
@@ -323,17 +340,23 @@ domain_table_create(region_type* region)
 	root = (domain_type *) region_alloc(region, sizeof(domain_type));
 #ifdef USE_RADIX_TREE
 	root->dname
+#elif defined(USE_QP_TRIE)
+	root->dname
 #else
 	root->node.key
 #endif
 		= origin;
 	root->parent = NULL;
+#if defined(USE_QP_TRIE)
+	root->prev = root->next = NULL;
+#endif
 	root->wildcard_child_closest_match = root;
 	root->rrsets = NULL;
 	root->number = 1; /* 0 is used for after header */
 	root->usage = 1; /* do not delete root, ever */
 	root->is_existing = 0;
 	root->is_apex = 0;
+	root->is_temporary = 0;
 	root->numlist_prev = NULL;
 	root->numlist_next = NULL;
 #ifdef NSEC3
@@ -347,6 +370,9 @@ domain_table_create(region_type* region)
 	result->nametree = radix_tree_create(region);
 	root->rnode = radname_insert(result->nametree, dname_name(root->dname),
 		root->dname->name_size, root);
+#elif defined(USE_QP_TRIE)
+	result->nametree = qp_empty(region);
+	qp_add(&result->nametree, origin, root);
 #else
 	result->names_to_domains = rbtree_create(
 		region, (int (*)(const void *, const void *)) dname_compare);
@@ -370,6 +396,9 @@ domain_table_search(domain_table_type *table,
 {
 	int exact;
 	uint8_t label_match_count;
+#if defined(USE_QP_TRIE)
+	void *val;
+#endif
 
 	assert(table);
 	assert(dname);
@@ -380,6 +409,9 @@ domain_table_search(domain_table_type *table,
 	exact = radname_find_less_equal(table->nametree, dname_name(dname),
 		dname->name_size, (struct radnode**)closest_match);
 	*closest_match = (domain_type*)((*(struct radnode**)closest_match)->elem);
+#elif defined(USE_QP_TRIE)
+	exact = qp_find_le(&table->nametree, dname, &val);
+	*closest_match = val;
 #else
 	exact = rbtree_find_less_equal(table->names_to_domains, dname, (rbnode_type **) closest_match);
 #endif
@@ -405,6 +437,9 @@ domain_type *
 domain_table_find(domain_table_type* table,
 		  const dname_type* dname)
 {
+#if defined(USE_QP_TRIE)
+	return qp_get(&table->nametree, dname);
+#else
 	domain_type* closest_match;
 	domain_type* closest_encloser;
 	int exact;
@@ -412,6 +447,7 @@ domain_table_find(domain_table_type* table,
 	exact = domain_table_search(
 		table, dname, &closest_match, &closest_encloser);
 	return exact ? closest_encloser : NULL;
+#endif
 }
 
 
@@ -423,6 +459,9 @@ domain_table_insert(domain_table_type* table,
 	domain_type* closest_encloser;
 	domain_type* result;
 	int exact;
+#if defined(USE_QP_TRIE)
+	struct prev_next pn;
+#endif
 
 	assert(table);
 	assert(dname);
@@ -443,6 +482,16 @@ domain_table_insert(domain_table_type* table,
 			result->rnode = radname_insert(table->nametree,
 				dname_name(result->dname),
 				result->dname->name_size, result);
+#elif defined(USE_QP_TRIE)
+			pn = qp_add(&table->nametree, result->dname, result);
+			if(pn.prev != NULL) {
+				result->prev = pn.prev;
+				result->prev->next = result;
+			}
+			if(pn.next != NULL) {
+				result->next = pn.next;
+				result->next->prev = result;
+			}
 #else
 			rbtree_insert(table->names_to_domains, (rbnode_type *) result);
 #endif
@@ -651,10 +700,14 @@ rr_rrsig_type_covered(rr_type* rr)
 zone_type *
 namedb_find_zone(namedb_type* db, const dname_type* dname)
 {
+#if defined(USE_QP_TRIE)
+	return qp_get(&db->zonetree, dname);
+#else
 	struct radnode* n = radname_search(db->zonetree, dname_name(dname),
 		dname->name_size);
 	if(n) return (zone_type*)n->elem;
 	return NULL;
+#endif
 }
 
 rrset_type *

@@ -381,4 +381,16 @@ char* wirelabel2str(const uint8_t* label);
 /** check if two uncompressed dnames of the same total length are equal */
 int dname_equal_nocase(uint8_t* a, uint8_t* b, uint16_t len);
 
+/*
+ * Compare uncompressed normalized wireformat dnames for equality
+ */
+static inline int
+dname_equal(const dname_type* a, const dname_type* b)
+{
+	return (a == NULL || b == NULL) ? (a == b)
+		: (a->name_size == b->name_size &&
+		   memcmp(dname_name(a), dname_name(b),
+			  a->name_size) == 0);
+}
+
 #endif /* _DNAME_H_ */

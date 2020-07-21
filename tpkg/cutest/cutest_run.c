@@ -16,6 +16,7 @@
 
 CuSuite * reg_cutest_radtree(void);
 CuSuite * reg_cutest_rbtree(void);
+CuSuite * reg_cutest_qp(void);
 CuSuite * reg_cutest_util(void);
 CuSuite * reg_cutest_options(void);
 CuSuite * reg_cutest_dns(void);
@@ -69,6 +70,7 @@ int runalltests(const char *regex)
 	CuSuiteAddSuite(suite, reg_cutest_dname());
 	CuSuiteAddSuite(suite, reg_cutest_dns());
 	CuSuiteAddSuite(suite, reg_cutest_options());
+	CuSuiteAddSuite(suite, reg_cutest_qp());
 	CuSuiteAddSuite(suite, reg_cutest_radtree());
 	CuSuiteAddSuite(suite, reg_cutest_rbtree());
 	CuSuiteAddSuite(suite, reg_cutest_util());

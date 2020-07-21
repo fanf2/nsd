@@ -1065,12 +1065,21 @@ case "$enable_mmap" in
                 ;;
 esac
 
-AC_ARG_ENABLE(radix-tree, AS_HELP_STRING([--disable-radix-tree],[You can disable the radix tree and use the red-black tree for the main lookups, the red-black tree uses less memory, but uses some more CPU.]))
-case "$enable_radix_tree" in
-        no)
+AC_ARG_ENABLE(qp-trie, AC_HELP_STRING([--enable-qp-trie],[Use the qp-trie, which is smaller and faster than the radix tree, but not as small as the red-black tree.]))
+case "$enable_qp_trie" in
+	yes)
+	AC_DEFINE_UNQUOTED([USE_QP_TRIE], [], [Define this to use the qp-trie.])
 	;;
-	yes|*)
+        no|*)
+	;;
+esac
+
+AC_ARG_ENABLE(radix-tree, AC_HELP_STRING([--enable-radix-tree],[Use the radix tree.]))
+case "$enable_radix_tree" in
+	yes)
 	AC_DEFINE_UNQUOTED([USE_RADIX_TREE], [], [Define this to configure to use the radix tree.])
+	;;
+        no|*)
 	;;
 esac
 

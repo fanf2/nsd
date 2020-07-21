@@ -14,6 +14,7 @@
 
 #include "dname.h"
 #include "dns.h"
+#include "qp-trie.h"
 #include "radtree.h"
 #include "rbtree.h"
 struct zone_options;
@@ -39,6 +40,8 @@ struct domain_table
 	region_type* region;
 #ifdef USE_RADIX_TREE
 	struct radtree *nametree;
+#elif defined(USE_QP_TRIE)
+	struct qp_trie nametree;
 #else
 	rbtree_type      *names_to_domains;
 #endif
@@ -97,6 +100,10 @@ struct domain
 #ifdef USE_RADIX_TREE
 	struct radnode* rnode;
 	const dname_type* dname;
+#elif defined(USE_QP_TRIE)
+	const dname_type* dname;
+	domain_type* prev;
+	domain_type* next;
 #else
 	rbnode_type     node;
 #endif
@@ -118,11 +125,14 @@ struct domain
 	 */
 	unsigned     is_existing : 1;
 	unsigned     is_apex : 1;
+	unsigned     is_temporary : 1;
 } ATTR_PACKED;
 
 struct zone
 {
+#if ! defined(USE_QP_TRIE)
 	struct radnode *node; /* this entry in zonetree */
+#endif
 	domain_type* apex;
 	rrset_type*  soa_rrset;
 	rrset_type*  soa_nx_rrset; /* see bug #103 */
@@ -204,6 +214,8 @@ domain_table_count(domain_table_type* table)
 {
 #ifdef USE_RADIX_TREE
 	return table->nametree->count;
+#elif defined(USE_QP_TRIE)
+	return table->nametree.count;
 #else
 	return table->names_to_domains->count;
 #endif
@@ -266,6 +278,8 @@ static inline dname_type *
 domain_dname(domain_type* domain)
 {
 #ifdef USE_RADIX_TREE
+        return (dname_type *) domain->dname;
+#elif defined(USE_QP_TRIE)
 	return (dname_type *) domain->dname;
 #else
 	return (dname_type *) domain->node.key;
@@ -276,6 +290,8 @@ static inline const dname_type *
 domain_dname_const(const domain_type* domain)
 {
 #ifdef USE_RADIX_TREE
+	return domain->dname;
+#elif defined(USE_QP_TRIE)
 	return domain->dname;
 #else
 	return (const dname_type *) domain->node.key;
@@ -288,6 +304,8 @@ domain_previous(domain_type* domain)
 #ifdef USE_RADIX_TREE
 	struct radnode* prev = radix_prev(domain->rnode);
 	return prev == NULL ? NULL : (domain_type*)prev->elem;
+#elif defined(USE_QP_TRIE)
+	return domain->prev;
 #else
 	rbnode_type *prev = rbtree_previous((rbnode_type *) domain);
 	return prev == RBTREE_NULL ? NULL : (domain_type *) prev;
@@ -300,6 +318,8 @@ domain_next(domain_type* domain)
 #ifdef USE_RADIX_TREE
 	struct radnode* next = radix_next(domain->rnode);
 	return next == NULL ? NULL : (domain_type*)next->elem;
+#elif defined(USE_QP_TRIE)
+	return domain->next;
 #else
 	rbnode_type *next = rbtree_next((rbnode_type *) domain);
 	return next == RBTREE_NULL ? NULL : (domain_type *) next;
@@ -322,7 +342,11 @@ struct namedb
 {
 	region_type*       region;
 	domain_table_type* domains;
+#if defined(USE_QP_TRIE)
+	struct qp_trie     zonetree;
+#else
 	struct radtree*    zonetree;
+#endif
 	struct udb_base*   udb;
 	/* the timestamp on the ixfr.db file */
 	struct timeval	  diff_timestamp;

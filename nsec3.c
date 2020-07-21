@@ -540,7 +540,10 @@ nsec3_find_cover(zone_type* zone, uint8_t* hash, size_t hashlen,
 
 	/* nsec3tree is sorted by b32 encoded domain name of the NSEC3 */
 	b32_ntop(hash, hashlen, (char*)(n+5), sizeof(n)-5);
+
 #ifdef USE_RADIX_TREE
+	d.dname = (dname_type*)n;
+#elif defined(USE_QP_TRIE)
 	d.dname = (dname_type*)n;
 #else
 	d.node.key = n;

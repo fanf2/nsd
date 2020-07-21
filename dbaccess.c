@@ -251,12 +251,19 @@ namedb_zone_create(namedb_type* db, const dname_type* dname,
 {
 	zone_type* zone = (zone_type *) region_alloc(db->region,
 		sizeof(zone_type));
+#if ! defined(USE_QP_TRIE)
 	zone->node = radname_insert(db->zonetree, dname_name(dname),
 		dname->name_size, zone);
 	assert(zone->node);
+#endif
 	zone->apex = domain_table_insert(db->domains, dname);
 	zone->apex->usage++; /* the zone.apex reference */
 	zone->apex->is_apex = 1;
+#if defined(USE_QP_TRIE)
+	/* domain_table_insert() makes a copy of the dname;
+	   the zonetree and apex must share the same dname */
+	qp_add(&db->zonetree, domain_dname(zone->apex), zone);
+#endif
 	zone->soa_rrset = NULL;
 	zone->soa_nx_rrset = NULL;
 	zone->ns_rrset = NULL;
@@ -284,7 +291,11 @@ void
 namedb_zone_delete(namedb_type* db, zone_type* zone)
 {
 	/* RRs and UDB and NSEC3 and so on must be already deleted */
+#if defined(USE_QP_TRIE)
+	qp_del(&db->zonetree, domain_dname(zone->apex));
+#else
 	radix_delete(db->zonetree, zone->node);
+#endif
 
 	/* see if apex can be deleted */
 	if(zone->apex) {
@@ -435,7 +446,11 @@ namedb_open (const char* filename, struct nsd_options* opt)
 	db = (namedb_type *) region_alloc(db_region, sizeof(struct namedb));
 	db->region = db_region;
 	db->domains = domain_table_create(db->region);
+#if defined(USE_QP_TRIE)
+	db->zonetree = qp_empty(db->region);
+#else
 	db->zonetree = radix_tree_create(db->region);
+#endif
 	db->diff_skip = 0;
 	db->diff_pos = 0;
 	zonec_setup_parser(db);
