@@ -1353,6 +1353,12 @@ main(int argc, char *argv[])
 				nsd.log_filename, strerror(errno)));
 	}
 	log_msg(LOG_NOTICE, "%s starting (%s)", argv0, PACKAGE_STRING);
+#ifdef USE_RADIX_TREE
+	log_msg(LOG_NOTICE, "using radix tree");
+#endif
+#if defined(USE_QP_TRIE)
+	log_msg(LOG_NOTICE, "using qp-trie");
+#endif
 
 	/* Do we have a running nsd? */
 	if(nsd.pidfile && nsd.pidfile[0]) {
