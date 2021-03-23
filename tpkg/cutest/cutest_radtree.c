@@ -551,8 +551,12 @@ test_insert_dname(struct radtree* rt, uint8_t* dname, size_t len)
 	CuAssert(tc, "insert", s->dname != NULL);
 	memcpy(s->dname, dname, len);
 	/* convert it */
-	s->mystr = (uint8_t*)malloc(len);
+#ifdef USE_COMP_TREE
+	s->mylen = len*3/2;
+#else
 	s->mylen = len;
+#endif
+	s->mystr = (uint8_t*)malloc(s->mylen);
 	CuAssert(tc, "insert", s->mystr != NULL);
 	radname_d2r(s->mystr, &s->mylen, dname, len);
 	/* check that its inverse conversion is the original */
@@ -785,7 +789,9 @@ static void radtree_1(CuTest* t)
 {
 	tc = t;
 	/* test radname conversion */
+#ifndef USE_COMP_TREE
 	test_radname();
+#endif
 }
 
 static void radtree_2(CuTest* t)

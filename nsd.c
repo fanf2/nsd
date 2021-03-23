@@ -1356,7 +1356,10 @@ main(int argc, char *argv[])
 #ifdef USE_RADIX_TREE
 	log_msg(LOG_NOTICE, "using radix tree");
 #endif
-#if defined(USE_QP_TRIE)
+#ifdef USE_COMP_TREE
+	log_msg(LOG_NOTICE, "compact radix tree");
+#endif
+#ifdef USE_QP_TRIE
 	log_msg(LOG_NOTICE, "using qp-trie");
 #endif
 

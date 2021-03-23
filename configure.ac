@@ -1074,6 +1074,16 @@ case "$enable_qp_trie" in
 	;;
 esac
 
+AC_ARG_ENABLE(comp-tree, AC_HELP_STRING([--enable-comp-tree],[Use compact radix tree.]))
+case "$enable_comp_tree" in
+	yes)
+	AC_DEFINE_UNQUOTED([USE_RADIX_TREE], [], [Define this to configure to use the radix tree.])
+	AC_DEFINE_UNQUOTED([USE_COMP_TREE], [], [Define this to compact the radix tree.])
+	;;
+        no|*)
+	;;
+esac
+
 AC_ARG_ENABLE(radix-tree, AC_HELP_STRING([--enable-radix-tree],[Use the radix tree.]))
 case "$enable_radix_tree" in
 	yes)

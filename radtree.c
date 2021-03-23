@@ -16,6 +16,10 @@
 #include <stdio.h>
 #include <ctype.h>
 
+#ifdef USE_COMP_TREE
+static void radname_init(void);
+#endif
+
 struct radtree* radix_tree_create(struct region* region)
 {
 	struct radtree* rt = (struct radtree*)region_alloc(region, sizeof(*rt));
@@ -27,6 +31,9 @@ struct radtree* radix_tree_create(struct region* region)
 
 void radix_tree_init(struct radtree* rt)
 {
+#ifdef USE_COMP_TREE
+	radname_init();
+#endif
 	rt->root = NULL;
 	rt->count = 0;
 }
@@ -1011,6 +1018,8 @@ struct radnode* radix_prev(struct radnode* n)
 	return NULL;
 }
 
+#ifndef USE_COMP_TREE
+
 /** convert one character from domain-name to radname */
 static uint8_t char_d2r(uint8_t c)
 {
@@ -1422,3 +1431,319 @@ int radname_find_less_equal(struct radtree* rt, const uint8_t* d, size_t max,
 	return 0;
 }
 
+
+#else /* USE_COMP_TREE */
+
+/*
+ * The aim of compact lookup keys is to make the radix tree shallower
+ * and denser, so that we use memory more efficiently.
+ *
+ * To convert a dname into a compact lookup key, we convert common
+ * hostname characters into a single 6-bit value, and other bytes are
+ * converted into a pair of 6-bit values. The 6-bit values are packed
+ * into 8-bit bytes a bit like base64 decoding.
+ *
+ * Although it isn't necessary in this implementation, we ensure that
+ * there are no zero bytes in the compact key by excluding 6-bit
+ * values that have the top 4 bits clear (i.e. 0, 1, 2, 3) or the
+ * bottom 4 bits clear (i.e. 0, 16, 32, 48).
+ */
+
+static uint16_t d2r_sixes[256];
+
+#define D2R_SIX_LABEL 4
+#define D2R_SIX_INIT 5
+#define D2R_SIX_MAX (1 << 6)
+#define D2R_SIX_INC(six) ((((six) & 15) == 15) ? (six)+2 : (six)+1)
+
+static void
+radname_init(void) {
+	uint8_t six_one = D2R_SIX_INIT;
+	uint8_t six_two = D2R_SIX_INIT;
+	int escaping = 1;
+	if(d2r_sixes[0] != 0)
+		return;
+	for(int byte = 0; byte < 256; byte++) {
+		if (byte == '*' || byte == '-' ||
+		    ('0' <= byte && byte <= '9') ||
+		    ('_' <= byte && byte <= 'z')) {
+			// common characters
+			six_one = D2R_SIX_INC(six_one);
+			d2r_sixes[byte] = six_one;
+			escaping = 0;
+		} else if('A' <= byte && byte <= 'Z') {
+			// map upper case to lower case
+			d2r_sixes[byte]
+				= (six_one + 1)	// bump past escape character
+				+ ('a' - '_')	// and skip non-letters
+				+ (byte - 'A');	// count the alphabet
+			// skip disallowed values
+			if(d2r_sixes[byte] >= 32)
+				d2r_sixes[byte]++;
+			if(d2r_sixes[byte] >= 48)
+				d2r_sixes[byte]++;
+		} else {
+			// non-hostname characters need to be escaped
+			if(!escaping || six_two >= D2R_SIX_MAX) {
+				escaping = 1;
+				six_one = D2R_SIX_INC(six_one);
+				six_two = D2R_SIX_INIT;
+			}
+			d2r_sixes[byte] = six_two << 6 | six_one;
+			six_two = D2R_SIX_INC(six_two);
+		}
+	}
+	assert(six_one < D2R_SIX_MAX);
+}
+
+/* radname code: domain to compact radix-bstring */
+void
+radname_d2r(uint8_t *k, radstrlen_type *len,
+	    const uint8_t *dname, size_t dlen)
+{
+	/* conversion by putting the label starts on a stack */
+	const uint8_t *labstart[130];
+	unsigned label = 0, kpos = 0, dpos = 0;
+	unsigned six4 = 0, sixlen = 0;
+
+	/* compactify sixes into bytes */
+#define EMIT(six) do {						\
+		six4 = (six4 << 6) | (six);			\
+		if(++sixlen == 4) {				\
+			k[kpos++] = (six4 >> 16) & 0xFF;	\
+			k[kpos++] = (six4 >> 8) & 0xFF;		\
+			k[kpos++] = (six4 >> 0) & 0xFF;		\
+			six4 = sixlen = 0;			\
+		}						\
+	} while(0)
+
+	/* sufficient space */
+	assert(k && dname);
+	assert(dlen > 0); /* even root label has dlen=1 */
+	assert(dlen <= 256); /* and therefore not more than 128 labels */
+	/* each byte may be escaped then compactified */
+	assert(*len >= dlen * 2 * 6 / 8);
+
+	/* walk through domain name and remember label positions */
+	while(dname[dpos] != 0) {
+		/* compression pointers not allowed */
+		if((dname[dpos] & 0xc0))
+			goto formerr;
+		/* label length and contents must fit */
+		if(dpos + 1 + dname[dpos] >= dlen)
+			goto formerr;
+		labstart[label++] = &dname[dpos];
+		dpos += 1 + dname[dpos];
+	}
+	/* we have not saved the root label at the end of the dname */
+
+	/* scan labels from TLD backwards */
+	while(label > 0) {
+		const uint8_t *lptr = labstart[--label];
+		unsigned llen = *lptr++;
+		for(unsigned c = 0; c < llen; c++) {
+			uint16_t sixes = d2r_sixes[lptr[c]];
+			EMIT(sixes % D2R_SIX_MAX);
+			// escaped?
+			if(sixes >> 6)
+				EMIT(sixes >> 6);
+		}
+		/* no need for trailing terminator */
+		if(label > 0)
+			EMIT(D2R_SIX_LABEL);
+	}
+
+	/* trailing bytes, without terminating zero */
+	switch(sixlen) {
+	case(1):
+		six4 = six4 << 18;
+		k[kpos++] = (six4 >> 16) & 0xFF;
+		break;
+	case(2):
+		six4 = six4 << 12;
+		k[kpos++] = (six4 >> 16) & 0xFF;
+		k[kpos++] = (six4 >> 8) & 0xFF;
+		break;
+	case(3):
+		six4 = six4 << 6;
+		k[kpos++] = (six4 >> 16) & 0xFF;
+		k[kpos++] = (six4 >> 8) & 0xFF;
+		k[kpos++] = (six4 >> 0) & 0xFF;
+		break;
+	}
+
+	*len = kpos;
+formerr:
+	return;
+
+#undef EMIT
+}
+
+/*
+ * radname: convert a pair of sixes to a dname character, and return
+ * the number of sixes that matched
+ *
+ * only used in the test suite so this doesn't need to be amazingly fast
+ */
+static unsigned
+r2d_sixes(uint8_t one, uint8_t two, uint8_t *out) {
+	unsigned byte;
+	uint16_t onetwo = (two << 6) | one;
+	for(byte = 0; byte < 256; byte++) {
+		if(d2r_sixes[byte] == one) {
+			if('A' <= byte && byte <= 'Z')
+				byte += 'a' - 'A';
+			if(out != NULL)
+				*out = byte;
+			return(1);
+		}
+		if(d2r_sixes[byte] == onetwo) {
+			if(out != NULL)
+				*out = byte;
+			return(2);
+		}
+	}
+	assert(!"mismatched sixes");
+	return(0);
+}
+
+/*
+ * radname code: compact radix-bstring to domain
+ *
+ * only used in the test suite so this doesn't need to be amazingly fast
+ */
+void
+radname_r2d(uint8_t *k, radstrlen_type klen, uint8_t *dname, size_t *dlen)
+{
+	uint8_t six_one, six_two;
+	unsigned six4, sixlen;
+	unsigned kpos, dpos, label;
+	uint8_t lablen[128] = {0};
+	uint8_t labpos[128] = {0};
+
+#define CONSUME_BYTE do {						\
+		sixlen += 8;						\
+		six4 <<= 8;						\
+		six4 |= (kpos < klen ? k[kpos++] : 0);			\
+	} while(0)
+
+#define CONSUME_SIX do {						\
+		if(sixlen == 0)	{					\
+			CONSUME_BYTE;					\
+			CONSUME_BYTE;					\
+			CONSUME_BYTE;					\
+		}							\
+		six_one = six_two;					\
+		six_two = (six4 >> 18) % D2R_SIX_MAX;			\
+		six4 <<= 6;						\
+		sixlen -= 6;						\
+	} while(0)
+
+#define CONSUME_START do {						\
+		six_one = six_two = 0;					\
+		six4 = sixlen = 0;					\
+		kpos = label = 0;					\
+		CONSUME_SIX;						\
+		CONSUME_SIX;						\
+	} while(0)
+
+	/* scan for label markers */
+	CONSUME_START;
+	while(six_one != 0) {
+		if(six_one == D2R_SIX_LABEL) {
+			label++;
+			assert(label < 128);
+		} else {
+			lablen[label]++;
+			assert(lablen[label] < 0xc0);
+			if(r2d_sixes(six_one, six_two, NULL) == 2)
+				CONSUME_SIX;
+		}
+		CONSUME_SIX;
+	}
+	/* last label lacks terminator */
+	if(klen > 0)
+		label++;
+
+	/* calculate dname label positions and set label lengths */
+	dpos = 0;
+	while(label-- > 0) {
+		labpos[label] = dpos;
+		dname[dpos] = lablen[label];
+		dpos = dpos + 1 + lablen[label];
+		assert(dpos < *dlen);
+	}
+
+	/* root label */
+	dname[dpos++] = 0;
+	*dlen = dpos;
+
+	/* fill in the other labels */
+	CONSUME_START;
+	dpos = labpos[label];
+	while(six_one != 0) {
+		if(six_one == D2R_SIX_LABEL) {
+			label++;
+			dpos = labpos[label];
+		} else {
+			if(r2d_sixes(six_one, six_two, &dname[++dpos]) == 2)
+				CONSUME_SIX;
+		}
+		CONSUME_SIX;
+	}
+
+#undef CONSUME_BYTE
+#undef CONSUME_SIX
+#undef CONSUME_START
+}
+
+/** insert by domain name */
+struct radnode*
+radname_insert(struct radtree *rt, const uint8_t *d, size_t max, void *elem)
+{
+	/* convert and insert */
+	uint8_t radname[400];
+	radstrlen_type len = (radstrlen_type)sizeof(radname);
+	radname_d2r(radname, &len, d, max);
+	if(len == (radstrlen_type)sizeof(radname))
+		return NULL; /* formerr or root */
+	return radix_insert(rt, radname, len, elem);
+}
+
+/** delete by domain name */
+void
+radname_delete(struct radtree *rt, const uint8_t *d, size_t max)
+{
+	/* search and remove */
+	struct radnode* n = radname_search(rt, d, max);
+	if(n) radix_delete(rt, n);
+}
+
+/* search for exact match of domain name, converted to radname in tree */
+struct radnode *
+radname_search(struct radtree *rt, const uint8_t *d, size_t max)
+{
+	uint8_t radname[400];
+	radstrlen_type len = (radstrlen_type)sizeof(radname);
+	radname_d2r(radname, &len, d, max);
+	if(len == (radstrlen_type)sizeof(radname))
+		return NULL; /* formerr or root */
+	return radix_search(rt, radname, len);
+}
+
+/* find domain name or smaller or equal domain name in radix tree */
+int
+radname_find_less_equal(struct radtree *rt, const uint8_t *d, size_t max,
+			struct radnode **result)
+{
+	uint8_t radname[400];
+	radstrlen_type len = (radstrlen_type)sizeof(radname);
+	radname_d2r(radname, &len, d, max);
+	if(len == (radstrlen_type)sizeof(radname)) {
+		*result = NULL; /* formerr or root */
+		return 0;
+	}
+	return radix_find_less_equal(rt, radname, len, result);
+}
+
+#endif /* USE_COMP_TREE */

@@ -1413,7 +1413,7 @@ void udb_radix_prev(udb_base* udb, udb_ptr* n)
 udb_void udb_radname_insert(udb_base* udb, udb_ptr* rt, const uint8_t* dname,
 	size_t dlen, udb_ptr* elem, udb_ptr* result)
 {
-	uint8_t k[300];
+	uint8_t k[400];
 	radstrlen_type klen = (radstrlen_type)sizeof(k);
 	radname_d2r(k, &klen, dname, dlen);
 	return udb_radix_insert(udb, rt, k, klen, elem, result);
@@ -1423,7 +1423,7 @@ int udb_radname_search(udb_base* udb, udb_ptr* rt, const uint8_t* dname,
         size_t dlen, udb_ptr* result)
 {
 	udb_void r;
-	uint8_t k[300];
+	uint8_t k[400];
 	radstrlen_type klen = (radstrlen_type)sizeof(k);
 	radname_d2r(k, &klen, dname, dlen);
 	r = udb_radix_search(rt, k, klen);
