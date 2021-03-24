@@ -15,11 +15,13 @@
 #include "dname.h"
 
 static void dname_1(CuTest *tc);
+static void dname_2(CuTest *tc);
 
 CuSuite* reg_cutest_dname(void)
 {
 	CuSuite* suite = CuSuiteNew();
 	SUITE_ADD_TEST(suite, dname_1);
+	SUITE_ADD_TEST(suite, dname_2);
 	return suite;
 }
 
@@ -107,6 +109,40 @@ dname_1(CuTest *tc)
 		"abcdef1234567890.abcdef1234567890.abcdef1234567890."
 		"abcdef1234567890.abcdef1234567890.abcdef1234567890.long."));
 	CuAssert(tc, "test dname replace overflow", res == NULL);
+
+	region_destroy(region);
+}
+
+static void
+dname_2(CuTest *tc)
+{
+	/* test dname_replace */
+	region_type *region = region_create(xalloc, free);
+	const dname_type *r;
+
+#define NAME250 "123456789.123456789.123456789.123456789.123456789." /*  50 */ \
+		"123456789.123456789.123456789.123456789.123456789." /* 100 */ \
+		"123456789.123456789.123456789.123456789.123456789." /* 150 */ \
+		"123456789.123456789.123456789.123456789.123456789." /* 200 */ \
+		"123456789.123456789.123456789.123456789.123456789." /* 250 */
+
+	r = dname_parse(region, NAME250"12");
+	CuAssert(tc, "test parse 252", r != NULL);
+
+	r = dname_parse(region, NAME250"12.");
+	CuAssert(tc, "test parse 252.", r != NULL);
+
+	r = dname_parse(region, NAME250"123");
+	CuAssert(tc, "test parse 253", r != NULL);
+
+	r = dname_parse(region, NAME250"123.");
+	CuAssert(tc, "test parse 253.", r != NULL);
+
+	r = dname_parse(region, NAME250"1234");
+	CuAssert(tc, "test parse 254", r == NULL);
+
+	r = dname_parse(region, NAME250"1234.");
+	CuAssert(tc, "test parse 254.", r == NULL);
 
 	region_destroy(region);
 }
