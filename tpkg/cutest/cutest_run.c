@@ -161,13 +161,17 @@ int main(int argc, char* argv[])
 			return 1;
 		}
 	}
-	/* argc -= optind;
-	   argv += optind; move along argc, argv, for positional args */
+	argc -= optind;
+	argv += optind;
+
 	if(qfile)
 		return runqtest(config, qfile, verb);
 
 	/* init random */
-	seed = time(NULL) ^ getpid();
+	if(argc > 0)
+		seed = atoi(argv[0]);
+	else
+		seed = time(NULL) ^ getpid();
 	fprintf(stderr, "srandom(%u)\n", seed);
 	srandom(seed);
 
