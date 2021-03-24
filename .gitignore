@@ -30,6 +30,7 @@
 /nsd.conf.sample
 /nsd-mem
 /cutest
+/fuzz-radname
 /*treeperf
 /popen3_echo
 /udb-inspect

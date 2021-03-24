@@ -17,7 +17,7 @@ if [ ! -f top-1m.list ]
 then sed 's///;s/^[0-9]*,//' <top-1m.csv >top-1m.list
 fi
 
-for i in rb rad qp;
+for i in rb comp rad qp;
 do  echo $i;
     ./${i}treeperf count top-1m.list;
     ./${i}treeperf time top-1m.list;

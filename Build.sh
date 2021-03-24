@@ -38,6 +38,8 @@ build() {
 	mv ${IN}/bin/nsd ${IN}/bin/nsd-$suffix
 }
 
+build comp --enable-comp-tree
+
 build rad --enable-radix-tree
 
 build qp --enable-qp-trie

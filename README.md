@@ -2,10 +2,14 @@
 
 The NLnet Labs Name Server Daemon (NSD) is an authoritative DNS name server.
 
-This fork of NSD can be configured so that the core domain name lookup
-data structure is a [DNS-specific qp-trie](https://dotat.at/prog/qp/);
+In this fork of NSD, there are a couple of configuration options to
+change how the core domain name lookup structure works.
+
+One option is a [DNS-specific qp-trie](https://dotat.at/prog/qp/);
 build with `./configure --use-qp-trie`
 
+Another option is to use NSD's default radix tree, but with compact
+keys; build with `./configure --use-comp-tree`
 
 build and test
 --------------
@@ -39,6 +43,8 @@ The versions are:
 
   * `rbtreeperf`: NSD's alternative red-black tree
 
+  * `comptreeperf`: radix tree with compact keys
+
   * `qptreeperf`: my DNS-optimized qp-trie
 
 
@@ -55,6 +61,11 @@ The following results were run on an Apple MacBook Pro
     typo     0/1000000 0.912661000 seconds
     nxdomain 0/1000000 0.345298000 seconds
     354436840 bytes allocated (338.017 MiB)
+    comp
+    yxdomain 1000000/0 1.034064000 seconds
+    typo     0/1000000 1.027575000 seconds
+    nxdomain 0/1000000 0.433388000 seconds
+    798873296 bytes allocated (761.865 MiB)
     qp
     yxdomain 1000000/0 0.683194000 seconds
     typo     0/1000000 0.810722000 seconds

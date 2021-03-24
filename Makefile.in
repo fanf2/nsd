@@ -40,6 +40,7 @@ CC		= @CC@
 CPPFLAGS	= @CPPFLAGS@
 CFLAGS		= @CFLAGS@
 LDFLAGS		= @LDFLAGS@
+FUZZFLAGS	= -fsanitize=fuzzer,address,signed-integer-overflow
 LIBS		= @LIBS@
 SSL_LIBS	= @SSL_LIBS@
 LIBOBJS		= @LIBOBJS@
@@ -182,15 +183,24 @@ xfr-inspect:	xfr-inspect.o $(COMMON_OBJ) $(LIBOBJS)
 popen3_echo: popen3.o popen3_echo.o
 	$(LINK) -o $@ popen3.o popen3_echo.o
 
-treeperf: qptreeperf radtreeperf rbtreeperf
+# TODO fanf make fuzzing support into a configure option
+fuzz-radname: $(COMMON_OBJ) $(srcdir)/tpkg/fuzz/fuzz-radname.c
+	$(COMPILE) $(FUZZFLAGS) -c $(srcdir)/radtree.c
+	$(COMPILE) $(FUZZFLAGS) -c $(srcdir)/tpkg/fuzz/fuzz-radname.c
+	$(LINK) $(FUZZFLAGS) -o $@ $(COMMON_OBJ) $(LIBOBJS) $(LIBS) fuzz-radname.o
+
+treeperf: qptreeperf comptreeperf radtreeperf rbtreeperf
 
 qptreeperf: treeperf-qp.o namedb-qp.o qp-trie.o $(TREEPERF_OBJ) $(LIBOBJS)
 	$(LINK) -o $@ treeperf-qp.o namedb-qp.o qp-trie.o $(TREEPERF_OBJ) $(LIBOBJS)
 
-radtreeperf: treeperf-radtree.o namedb-radtree.o radtree.o $(TREEPERF_OBJ) $(LIBOBJS)
-	$(LINK) -o $@ treeperf-radtree.o namedb-radtree.o radtree.o $(TREEPERF_OBJ) $(LIBOBJS)
+comptreeperf: treeperf-radtree.o namedb-radtree.o radtree-comp.o $(TREEPERF_OBJ) $(LIBOBJS)
+	$(LINK) -o $@ treeperf-radtree.o namedb-radtree.o radtree-comp.o $(TREEPERF_OBJ) $(LIBOBJS)
 
-rbtreeperf: treeperf-rbtree.o namedb-rbtree.o rbtree.o $(TREEPERF_OJB) $(LIBOBJS)
+radtreeperf: treeperf-radtree.o namedb-radtree.o radtree-rad.o $(TREEPERF_OBJ) $(LIBOBJS)
+	$(LINK) -o $@ treeperf-radtree.o namedb-radtree.o radtree-rad.o $(TREEPERF_OBJ) $(LIBOBJS)
+
+rbtreeperf: treeperf-rbtree.o namedb-rbtree.o rbtree.o $(TREEPERF_OBJ) $(LIBOBJS)
 	$(LINK) -o $@ treeperf-rbtree.o namedb-rbtree.o rbtree.o $(TREEPERF_OBJ) $(LIBOBJS)
 
 checksec:
@@ -375,6 +385,12 @@ treeperf-rbtree.o:	$(srcdir)/tpkg/treeperf/treeperf.c \
 			$(srcdir)/tpkg/treeperf/pcg64.h \
 			$(srcdir)/dname.h
 	$(COMPILE) -o $@ -c -DTREEPERF_USE_RBTREE $(srcdir)/tpkg/treeperf/treeperf.c
+
+radtree-comp.o:	radtree.o
+	$(COMPILE) -o $@ -c -DUSE_COMP_TREE $(srcdir)/radtree.c
+
+radtree-rad.o:	radtree.o
+	$(COMPILE) -o $@ -c -UUSE_COMP_TREE $(srcdir)/radtree.c
 
 namedb-qp.o:	$(srcdir)/tpkg/treeperf/namedb-treeperf.c \
 		$(srcdir)/tpkg/treeperf/namedb-treeperf.h \
