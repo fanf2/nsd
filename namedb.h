@@ -132,6 +132,8 @@ struct zone
 {
 #if ! defined(USE_QP_TRIE)
 	struct radnode *node; /* this entry in zonetree */
+#else
+	const dname_type* dname;
 #endif
 	domain_type* apex;
 	rrset_type*  soa_rrset;

@@ -260,9 +260,8 @@ namedb_zone_create(namedb_type* db, const dname_type* dname,
 	zone->apex->usage++; /* the zone.apex reference */
 	zone->apex->is_apex = 1;
 #if defined(USE_QP_TRIE)
-	/* domain_table_insert() makes a copy of the dname;
-	   the zonetree and apex must share the same dname */
-	qp_add(&db->zonetree, domain_dname(zone->apex), zone);
+	zone->dname = zone->apex->dname;
+	qp_add(&db->zonetree, zone, &zone->dname);
 #endif
 	zone->soa_rrset = NULL;
 	zone->soa_nx_rrset = NULL;
@@ -447,7 +446,7 @@ namedb_open (const char* filename, struct nsd_options* opt)
 	db->region = db_region;
 	db->domains = domain_table_create(db->region);
 #if defined(USE_QP_TRIE)
-	db->zonetree = qp_empty(db->region);
+	db->zonetree = qp_empty();
 #else
 	db->zonetree = radix_tree_create(db->region);
 #endif

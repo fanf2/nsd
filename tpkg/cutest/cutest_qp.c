@@ -45,7 +45,7 @@ struct check_ctx {
  * walk a tree and check it is consistent
  */
 static void
-qp_check_node(qp_node *n, struct check_ctx *ctx, size_t min_off) {
+qp_check_node(struct qp_trie *t, qp_node *n, struct check_ctx *ctx, size_t min_off) {
 	if(isbranch(n)) {
 		qp_weight max, i;
 		size_t off;
@@ -58,14 +58,14 @@ qp_check_node(qp_node *n, struct check_ctx *ctx, size_t min_off) {
 		CuAssert(tc, "check_node max twigs",
 			 max <= (SHIFT_OFFSET - SHIFT_NOBYTE));
 		for(i = 0; i < max; i++) {
-			qp_check_node(twig(n, i), ctx, off + 1);
+			qp_check_node(t, twig(t, n, i), ctx, off + 1);
 		}
 	} else {
-		struct elem *e = (void *)n->index;
+		struct elem *e = leafval(n);
 		CuAssert(tc, "check_node val non-NULL",
 			 e != NULL);
 		CuAssert(tc, "check_node key val match",
-			 e->dname == n->ptr);
+			 e->dname == leafname(n));
 		if(ctx->count == 0) {
 			CuAssertPtrEq(tc, "check_node first elem prev",
 				      e->prev, NULL);
@@ -98,12 +98,11 @@ qp_check(struct qp_trie *t) {
 	struct check_ctx ctx = { 0, NULL, NULL };
 	if(fast) return;
 	if(t->count == 0) {
-		CuAssert(tc, "check empty ptr",
-			 t->root.ptr == NULL);
-		CuAssert(tc, "check empty index",
-			 t->root.index == 0);
+		CuAssert(tc, "check empty node",
+			 node64(&t->root) == 0 &&
+			 node32(&t->root) == 0);
 	} else {
-		qp_check_node(&t->root, &ctx, 0);
+		qp_check_node(t, &t->root, &ctx, 0);
 		CuAssert(tc, "check count", ctx.count == t->count);
 		CuAssertPtrEq(tc, "check last item",
 			      ctx.next, NULL);
@@ -150,12 +149,11 @@ print_bitmap(qp_node *n) {
 }
 
 void
-qp_dump(qp_node *n, int d) {
+qp_dump(struct qp_trie *t, qp_node *n, int d) {
 	qp_shift bit;
 	int dd;
 	if(isbranch(n)) {
-		printf("qp_dump%*s branch %p %zu %zu ", d, "", n,
-		       (size_t)n->index & BRANCH_TAG, keyoff(n));
+		printf("qp_dump%*s branch %p %zu ", d, "", n, keyoff(n));
 		print_bitmap(n);
 		dd = (int)keyoff(n) * 2 + 2;
 		assert(dd > d);
@@ -164,15 +162,15 @@ qp_dump(qp_node *n, int d) {
 				printf("qp_dump%*s twig ", d, "");
 				print_bit(bit);
 				putchar('\n');
-				qp_dump(twig(n, twigpos(n, bit)), dd);
+				qp_dump(t, twig(t, n, twigpos(n, bit)), dd);
 			}
 		}
 	} else {
-		struct elem *e = (void*)n->index;
+		struct elem *e = leafval(n);
 		printf("qp_dump%*s leaf %p\n", d, "", n);
 		printf("qp_dump%*s leaf key %p %s\n", d, "",
-		       n->ptr, n->ptr == NULL ? ""
-		       : dname_to_string(n->ptr, NULL));
+		       leafname(n), leafname(n) == NULL ? ""
+		       : dname_to_string(leafname(n), NULL));
 		printf("qp_dump%*s leaf val %p << %p >> %p\n", d, "",
 		       e ? e->prev : NULL, e, e ? e->next : NULL);
 	}
@@ -225,16 +223,16 @@ recycle_dname(region_type *region, const dname_type *dname) {
 }
 
 static struct elem *
-add_elem(struct qp_trie *t, const dname_type *dname) {
+add_elem(region_type *region, struct qp_trie *t, const dname_type *dname) {
 	struct elem *e;
 	struct prev_next pn;
 
-	e = region_alloc(t->region, sizeof(*e));
+	e = region_alloc(region, sizeof(*e));
 	e->dname = dname;
 
 	if(v) printf("add_elem %p %s\n", e, dname_to_string(dname, NULL));
 
-	pn = qp_add(t, dname, e);
+	pn = qp_add(t, e, &e->dname);
 	e->prev = pn.prev;
 	e->next = pn.next;
 	CuAssertPtrEq(tc, "add_elem elem in tree",
@@ -251,27 +249,27 @@ add_elem(struct qp_trie *t, const dname_type *dname) {
 		e->next->prev = e;
 	}
 
-	if(v) qp_dump(&t->root, 0);
+	if(v) qp_dump(t, &t->root, 0);
 	qp_check(t);
 
 	return(e);
 }
 
 static struct elem *
-add_random_elem(struct qp_trie *t) {
+add_random_elem(region_type *region, struct qp_trie *t) {
 	const dname_type *dname;
 
 	for(;;) {
-		dname = random_dname(t->region);
+		dname = random_dname(region);
 		if(qp_get(t, dname) == NULL)
 			break;
-		recycle_dname(t->region, dname);
+		recycle_dname(region, dname);
 	}
-	return(add_elem(t, dname));
+	return(add_elem(region, t, dname));
 }
 
 static void
-del_elem(struct qp_trie *t, struct elem *e) {
+del_elem(region_type *region, struct qp_trie *t, struct elem *e) {
 
 	if(v) printf("del_elem %p %s\n", e, dname_to_string(e->dname, NULL));
 
@@ -283,10 +281,10 @@ del_elem(struct qp_trie *t, struct elem *e) {
 
 	if(e->prev) e->prev->next = e->next;
 	if(e->next) e->next->prev = e->prev;
-	recycle_dname(t->region, e->dname);
-	region_recycle(t->region, e, sizeof(*e));
+	recycle_dname(region, e->dname);
+	region_recycle(region, e, sizeof(*e));
 
-	if(v) qp_dump(&t->root, 0);
+	if(v) qp_dump(t, &t->root, 0);
 	qp_check(t);
 }
 
@@ -316,7 +314,7 @@ static void
 cutest_qp(CuTest *ttc)
 {
 	struct region *region = region_create(xalloc, free);
-	struct qp_trie t = qp_empty(region);
+	struct qp_trie t = qp_empty();
 	struct elem *first, *e;
 	const dname_type *dname;
 	void *val;
@@ -328,7 +326,7 @@ cutest_qp(CuTest *ttc)
 	for(i = 0; i < 10000; i++) {
 		switch(random_generate(4)) {
 		case(0):
-			e = add_random_elem(&t);
+			e = add_random_elem(region, &t);
 			if(e->prev == NULL && first != NULL) {
 				CuAssertPtrEq(tc, "new elem before first",
 					      first->prev, e);
@@ -343,12 +341,12 @@ cutest_qp(CuTest *ttc)
 			if(e != NULL) {
 				if(e == first)
 					first = e->next;
-				del_elem(&t, e);
+				del_elem(region, &t, e);
 			}
 			continue;
 		case(2):
 			e = first;
-			qp_foreach(&t.root, elem_looper, &e);
+			qp_foreach(&t, elem_looper, &e);
 			CuAssertPtrEq(tc, "elem_looper expected last",
 				      e, NULL);
 			continue;
@@ -399,7 +397,7 @@ cutest_qp(CuTest *ttc)
 	while(first != NULL) {
 		e = first;
 		first = e->next;
-		del_elem(&t, e);
+		del_elem(region, &t, e);
 	}
 
 	region_destroy(region);

@@ -12,7 +12,7 @@
 /*
  * A bit of the right type
  */
-#define W1 ((qp_word)1)
+#define W1 ((uint64_t)1U)
 
 /*
  * Type of the number of bits set in a word (as in Hamming weight or
@@ -41,17 +41,57 @@ typedef uint8_t qp_shift;
 typedef qp_shift qp_key[512];
 
 /*
- * Index word layout.
+ * Type of twig references, which are relative to the tree's page table.
+ */
+typedef uint32_t qp_ref;
+
+/*
+ * Number of nodes in a page. Should be a power of 2.
+ */
+#define QP_PAGE_SIZE ((uint32_t)(1U << 12))
+#define QP_PAGE_BYTES (QP_PAGE_SIZE * sizeof(qp_node))
+
+static inline uint32_t refpage(qp_ref ref) { return(ref / QP_PAGE_SIZE); }
+
+static inline uint32_t reftwig(qp_ref ref) { return(ref % QP_PAGE_SIZE); }
+
+/*
+ * Convert a twig reference into a pointer.
+ */
+static inline qp_node *
+refptr(struct qp_trie *t, qp_ref ref) {
+	return(t->mem.page[refpage(ref)] + reftwig(ref));
+}
+
+/*
+ * How many twigs are actually in use in a page?
+ */
+static inline uint32_t
+pageusage(struct qp_trie *t, uint32_t page) {
+	return(t->mem.usage[page].used - t->mem.usage[page].free);
+}
+
+/*
+ * The page needs recycling if its usage is less than this threshold.
+ */
+#define QP_MIN_USAGE (QP_PAGE_SIZE - QP_PAGE_SIZE / 16)
+
+/*
+ * Compactify proactively when we pass this threshold.
+ */
+#define QP_MAX_FREE ((uint32_t)(1U << 20))
+
+/*
+ * In a branch the 64-bit word contains the tag, bitmap, and offset.
+ * This enum sets up the bit positions of these parts.
  *
- * This enum sets up the bit positions of the parts of the index word.
- *
- * In a leaf, the index word contains a pointer. The pointer must be
+ * In a leaf, the 64-bit word contains a pointer. The pointer must be
  * word-aligned so that the tag bit is zero.
  *
- * The bitmap is placed above the tag bit. The bit tests are set up to
+ * The bitmap is just above the tag bit. The bit tests are set up to
  * work directly against the index word; we don't need to extract the
- * bitmap before testing a bit, but we do need to mask the bitmap before
- * calling popcount.
+ * bitmap before testing a bit, but we do need to mask the bitmap
+ * before calling popcount.
  *
  * The key byte offset is at the top of the word, so that it can be
  * extracted with just a shift, with no masking needed.
@@ -66,14 +106,91 @@ enum {
 /*
  * Value of the node type tag bit.
  */
-#define BRANCH_TAG (W1 << SHIFT_BRANCH)
+#define BRANCH_TAG (1U << SHIFT_BRANCH)
 
 /*
  * Test a node's tag bit.
  */
 static inline bool
 isbranch(qp_node *n) {
-	return(n->index & BRANCH_TAG);
+	return(n->word[0] & BRANCH_TAG);
+}
+
+/*
+ * Get the 64-bit word of a node.
+ */
+static inline uint64_t
+node64(qp_node *n) {
+	uint64_t lo = (uint64_t)n->word[0];
+	uint64_t hi = (uint64_t)n->word[1];
+	return(lo | (hi << 32));
+}
+
+/*
+ * Get the 32-bit word of a node.
+ */
+static inline uint32_t
+node32(qp_node *n) {
+	return(n->word[2]);
+}
+
+/*
+ * Create a node from its parts
+ */
+static inline qp_node
+newnode(uint64_t word64, uint32_t word32) {
+	qp_node node = {
+		(uint32_t)word64,
+		(uint32_t)(word64 >> 32),
+		word32,
+	};
+	return(node);
+}
+
+/*
+ * Get a leaf's value
+ */
+static inline void *
+leafval(qp_node *n) {
+	return((void *)node64(n));
+}
+
+/*
+ * Get a leaf's domain name
+ */
+static inline const dname_type *
+leafname(qp_node *n) {
+	const unsigned char *val = leafval(n);
+	const void *ppdname = val + node32(n);
+	return(*(const dname_type **)ppdname);
+}
+
+/*
+ * Create a leaf node from its parts
+ */
+static inline qp_node
+newleaf(const void *val, const void *ppd) {
+	ptrdiff_t off = (const unsigned char *)ppd - (const unsigned char *)val;
+	assert(0 <= off && off < ((ptrdiff_t)1 << 32));
+	qp_node leaf = newnode((uint64_t)val, (uint32_t)off);
+	assert(!isbranch(&leaf));
+	return(leaf);
+}
+
+/*
+ * Get a reference to a branch node's child twigs.
+ */
+static inline qp_ref
+twigref(qp_node *n) {
+	return(node32(n));
+}
+
+/*
+ * Get a pointer to a branch node's child twigs.
+ */
+static inline qp_node *
+twigbase(struct qp_trie *t, qp_node *n) {
+	return(refptr(t, twigref(n)));
 }
 
 /*
@@ -81,7 +198,7 @@ isbranch(qp_node *n) {
  */
 static inline size_t
 keyoff(qp_node *n) {
-	return(n->index >> SHIFT_OFFSET);
+	return((size_t)(node64(n) >> SHIFT_OFFSET));
 }
 
 /*
@@ -99,7 +216,7 @@ twigbit(qp_node *n, const qp_key key, size_t len) {
  */
 static inline bool
 hastwig(qp_node *n, qp_shift bit) {
-	return((W1 << bit) & n->index);
+	return(node64(n) & (W1 << bit));
 }
 
 /*
@@ -110,8 +227,8 @@ hastwig(qp_node *n, qp_shift bit) {
  */
 static inline qp_weight
 bmpcount(qp_node *n, qp_shift bit) {
-	qp_word mask = (W1 << bit) - 1 - BRANCH_TAG;
-	unsigned long long bmp = (unsigned long long)(n->index & mask);
+	uint64_t mask = (W1 << bit) - 1 - BRANCH_TAG;
+	unsigned long long bmp = (unsigned long long)(node64(n) & mask);
 	return((qp_weight)__builtin_popcountll(bmp));
 }
 
@@ -138,8 +255,8 @@ twigpos(qp_node *n, qp_shift bit) {
  * Get the twig at the given position.
  */
 static inline qp_node *
-twig(qp_node *n, qp_weight pos) {
-	return((qp_node *)n->ptr + pos);
+twig(struct qp_trie *t, qp_node *n, qp_weight pos) {
+	return(twigbase(t, n) + pos);
 }
 
 /*

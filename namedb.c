@@ -371,8 +371,8 @@ domain_table_create(region_type* region)
 	root->rnode = radname_insert(result->nametree, dname_name(root->dname),
 		root->dname->name_size, root);
 #elif defined(USE_QP_TRIE)
-	result->nametree = qp_empty(region);
-	qp_add(&result->nametree, origin, root);
+	result->nametree = qp_empty();
+	qp_add(&result->nametree, root, &root->dname);
 #else
 	result->names_to_domains = rbtree_create(
 		region, (int (*)(const void *, const void *)) dname_compare);
@@ -483,7 +483,7 @@ domain_table_insert(domain_table_type* table,
 				dname_name(result->dname),
 				result->dname->name_size, result);
 #elif defined(USE_QP_TRIE)
-			pn = qp_add(&table->nametree, result->dname, result);
+			pn = qp_add(&table->nametree, result, &result->dname);
 			if(pn.prev != NULL) {
 				result->prev = pn.prev;
 				result->prev->next = result;

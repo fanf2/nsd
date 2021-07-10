@@ -186,7 +186,7 @@ static void
 check_walkzones(CuTest* tc, namedb_type* db)
 {
 #if defined(USE_QP_TRIE)
-	qp_foreach(&db->zonetree.root, check_walkzones_fn, tc);
+	qp_foreach(&db->zonetree, check_walkzones_fn, tc);
 #else
 	struct radnode* n;
 	for(n=radix_first(db->zonetree); n; n=radix_next(n)) {
@@ -210,7 +210,7 @@ static void
 usage_for_zones(namedb_type* db, size_t* usage)
 {
 #if defined(USE_QP_TRIE)
-	qp_foreach(&db->zonetree.root, usage_for_zones_fn, usage);
+	qp_foreach(&db->zonetree, usage_for_zones_fn, usage);
 #else
 	struct radnode* n;
 	for(n=radix_first(db->zonetree); n; n=radix_next(n)) {

@@ -8,63 +8,81 @@
 #define QP_TRIE_H
 
 /*
- * Type-punned words, that can be a 64-bit integer or a pointer.
- */
-#if UINTPTR_MAX < UINT32_MAX
-#error pointers must be at least 32 bits
-#elif UINTPTR_MAX < UINT64_MAX
-typedef uint64_t qp_word;
-#else
-typedef uintptr_t qp_word;
-#endif
-
-/*
- * A qp-trie node is a pair of words, which can be a leaf or a branch.
+ * A qp-trie node can be a leaf or a branch. It consists of three
+ * 32-bit words into which the components are packed. They are
+ * used as a 64-bit word and a 32-bit word, but they are not
+ * declared like that to avoid unwanted padding.
  *
- * In a branch:
+ * A branch contains:
  *
- * `ptr` is a pointer to the "twigs", a packed sparse vector of
- * child nodes.
+ * - The bottom bit is a non-zero tag.
  *
- * `index` contains the bitmap and offset that describe the twigs.
- * The bottom bit is a non-zero tag.
+ * - A 47-bit bitmap that marks which twigs are present.
  *
- * In a leaf:
+ * - The 9-bit offset of the byte in the key which is used to find
+ *   the child twig.
  *
- * `ptr` points to a struct dname.
+ * - The 32-bit node reference of the twigs, which are a packed
+ *   sparse vector of child nodes.
  *
- * `index` is cast from a void* value, which must be word aligned
- * so that the bottom tag bit is zero.
+ * A leaf contains:
+ *
+ * - A word-aligned pointer to the value, which can be up to 64 bits.
+ *
+ * - The offsetof() the dname pointer within the value, which must
+ *   be less than 32 bits.
  */
 typedef struct qp_node {
-	void *ptr;
-	qp_word index;
+	uint32_t word[3];
 } qp_node;
+
+/*
+ * Information used by the allocator and garbage collector.
+ *
+ * `count` is the number of elements in the page and stats arrays.
+ *
+ * `here` is the page currently being used for allocation.
+ *
+ * `free` is the sum of all the per-page free counters.
+ *
+ * `gc_time` and `gc_space` summarize garbage collection performance.
+ *
+ * `page` is an array of pointers to pages.
+ *
+ * `usage` is an array containing information about each page.
+ *
+ * They are separate arrays because the usage counters are not
+ * used in the fast path.
+ */
+struct qp_stats {
+	double count, total, square;
+};
+struct qp_usage {
+	uint32_t used, free;
+};
+struct qp_mem {
+	uint32_t count, here, free;
+	qp_node **page;
+	struct qp_usage *usage;
+	struct qp_stats gc_time, gc_space;
+};
 
 /*
  * A qp-trie
  */
 struct qp_trie {
-	/** the root node */
-	qp_node root;
 	/** count of number of elements */
 	size_t count;
-	/** region for allocation */
-	struct region *region;
+	/** the root node */
+	qp_node root;
+	/** memory */
+	struct qp_mem mem;
 };
 
 /*
  * Initialize a qp_trie
  */
-static inline struct qp_trie
-qp_empty(struct region *region)
-{
-	struct qp_trie t = {
-		{ 0, 0, },
-		0, region,
-	};
-	return t;
-}
+struct qp_trie qp_empty(void);
 
 /*
  * Neighbours of a newly added item
@@ -76,7 +94,7 @@ struct prev_next {
 /*
  * Add an item to a qp_trie, and return its neighbours
  */
-struct prev_next qp_add(struct qp_trie *t, const dname_type *dname, void *val);
+struct prev_next qp_add(struct qp_trie *t, void *val, const dname_type **dp);
 
 /*
  * Delete an entry from a qp_trie
@@ -98,7 +116,17 @@ int qp_find_le(struct qp_trie *t, const dname_type *dname, void **val);
 /*
  * Invoke a function for each item in the tree
  */
-void qp_foreach(qp_node *n, void (*fn)(void *val, void *ctx), void *ctx);
+void qp_foreach(struct qp_trie *t, void (*fn)(void *val, void *ctx), void *ctx);
+
+/*
+ * Garbage collector.
+ */
+void qp_compactify(struct qp_trie *t);
+
+/*
+ * Print memory statistics, and return the total used.
+ */
+size_t qp_print_memstats(FILE *fp, struct qp_trie *t);
 
 #endif /* QP_TRIE_H */
 

@@ -169,6 +169,10 @@ int main(int argc, char *argv[])
     }
   }
 
+#ifdef TREEPERF_USE_QP
+    qp_compactify(&table->nametree);
+#endif
+
   if (mode == TIME) {
 
     time_lookups("yxdomain", table, dname_list, count);
@@ -201,7 +205,15 @@ int main(int argc, char *argv[])
   }
 
   if (mode == COUNT) {
+#ifdef TREEPERF_USE_QP
+    size_t total = 0;
+    total += qp_print_memstats(stdout, &table->nametree);
+    total += print_talloc_stats();
+    printf("%zu total allocated (%.3f MiB)\n",
+	   total, (double)total / 1048576);
+#else
     print_talloc_stats();
+#endif
   }
 
   return 0;

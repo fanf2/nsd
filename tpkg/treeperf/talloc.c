@@ -103,8 +103,9 @@ void tfree(void *ptr)
   }
 }
 
-void print_talloc_stats(void)
+size_t print_talloc_stats(void)
 {
   printf("%zu bytes allocated (%.3f MiB)\n",
 	 alloc_cnt, (double)alloc_cnt / 1048576);
+  return alloc_cnt;
 }

@@ -134,8 +134,8 @@ domain_table_type *domain_table_create(region_type *region)
   table->nametree = nametree_create(region, &namedb_domain_name);
   table->nametree->root = nametree_tag_leaf(root);
 #elif defined(TREEPERF_USE_QP)
-  table->nametree = qp_empty(region);
-  qp_add(&table->nametree, origin, root);
+  table->nametree = qp_empty();
+  qp_add(&table->nametree, root, &root->dname);
 #elif defined(TREEPERF_USE_RADTREE)
   table->nametree = radix_tree_create(region);
   root->rnode = radname_insert(
@@ -267,7 +267,7 @@ domain_table_insert(
     assert(leaf == result);
     path.height--; /* reuse path */
 #elif defined(TREEPERF_USE_QP)
-    pn = qp_add(&table->nametree, result->dname, result);
+    pn = qp_add(&table->nametree, result, &result->dname);
     if(pn.prev != NULL) {
 	    result->prev = pn.prev;
 	    result->prev->next = result;

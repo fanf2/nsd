@@ -17,6 +17,6 @@ void *talloczero(size_t size);
 void *tallocarray(size_t nmemb, size_t size);
 void tfree(void *ptr);
 
-void print_talloc_stats(void);
+size_t print_talloc_stats(void);
 
 #endif /* _ALLOC_H_ */

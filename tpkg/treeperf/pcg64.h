@@ -9,7 +9,7 @@
  */
 
 #ifndef PCG64_H
-#define PCG64_h
+#define PCG64_H
 
 typedef __uint128_t uint128_t;
 
