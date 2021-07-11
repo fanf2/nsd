@@ -6,6 +6,10 @@ This fork of NSD can be configured so that the core domain name lookup
 data structure is a [DNS-specific qp-trie](https://dotat.at/prog/qp/);
 build with `./configure --use-qp-trie`
 
+This is a work-in-progress second version of the DNS qp-trie, which
+has lower memory usage, and will support concurrent copy-on-write
+updates.
+
 
 build and test
 --------------
@@ -55,11 +59,16 @@ The following results were run on an Apple MacBook Pro
     typo     0/1000000 0.912661000 seconds
     nxdomain 0/1000000 0.345298000 seconds
     354436840 bytes allocated (338.017 MiB)
-    qp
+    qp (old)
     yxdomain 1000000/0 0.683194000 seconds
     typo     0/1000000 0.810722000 seconds
     nxdomain 0/1000000 0.362822000 seconds
     151737648 bytes allocated (144.708 MiB)
+	qp (cow)
+	yxdomain 1000000/0 0.621896000 seconds
+	typo     0/1000000 0.794685000 seconds
+	nxdomain 0/1000000 0.388049000 seconds
+    99798928 bytes allocated (95.176 MiB)
 
 The following results were from an earlier version of the qp-trie
 code, run on an Intel i7-4770 3.4GHz.

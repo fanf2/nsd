@@ -245,6 +245,27 @@ of a key. Domain names have a maximum length of 255 bytes, and we
 have over 10 bits remaining, so the large DNS qp-trie bitmap is
 not a problem.
 
+ALLOCATION AND GARBAGE COLLECTION
+
+This qp-trie implementation has its own allocator and garbage
+collector, to provide two advantages: smaller tree nodes, and
+concurrent update transactions.
+
+Instead of using a native (64-bit) twigs pointer in a branch node, we
+use a 32-bit reference. This contains a page number and an offset to
+the twigs inside that page. A page number is an index into the
+allocator's page table. This reduces the size of a node from 16 bytes
+to 12 bytes. In a leaf node, instead of a direct pointer to the key
+(domain name) we require that the value contains the name, so we can
+get hold of it indirectly.
+
+To allow queries to continue while an update is in progress, the tree
+must be immutable, and modifications must be copy-on-write. The nodes
+that were copied will become garbage, but not until the transaction
+has committed and the query threads have switched over to the new
+tree. Before committing, the new tree can be compacted to reduce
+fragmentation; after committing, all the garbage can be recycled.
+
 FITTING A QP TRIE INTO NSD
 
 There are a couple of ways in which the qp-trie design doesn't fit
@@ -259,24 +280,16 @@ used for ordered lookups; or we can use two words to thread a
 doubly-linked list through them all. I'm choosing to do the
 latter.
 
-A qp-trie leaf node is a little bit flabby because it's often the
-case that the value object wants to contain the key as well, so
-the pointer in the leaf node is a bit redundant. But the leaf node
-itself can't be used as a proxy for the value object, because
-nodes move around when their containers are reallocated. So it's
-difficult to eliminate the redundancy.
+A rough estimate of qp-trie memory usage is 16 - 20 bytes per object:
+12 bytes for each leaf node and a few bytes per object shared between
+the interior branch nodes. (It varies between about 8 and 8 bytes per
+object depending on the set of keys.) In NSD we are adding prev+next
+pointers to each domain object as well. So we expect the qp-trie to
+use about 4 words per domain.
 
-A rough estimate of qp-trie memory usage is three words per
-object: key pointer, value pointer, and about one word of overhead
-for internal branching. (It varies between about 0.5 and 1.5 words
-per object depending on the set of keys.) In NSD we are adding
-prev+next pointers to each domain object as well. So we expect the
-qp-trie to use about 5 words per domain.
-
-By comparison, NSD's radtree structure uses 5 words per domain
-plus overhead for internal branching. (I don't know how much that
-typically is, but I expect it can be a lot.) The rbtree structure
-normally uses 4 words per domain.
+By comparison, NSD's radtree structure uses 5 words per domain plus
+overhead for internal branching, typically 200 - 300 bytes per object.
+The rbtree structure normally uses 4 words per domain.
 
 POSSIBLE IMPROVEMENTS
 
