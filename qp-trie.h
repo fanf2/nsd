@@ -8,81 +8,47 @@
 #define QP_TRIE_H
 
 /*
- * A qp-trie node can be a leaf or a branch. It consists of three
- * 32-bit words into which the components are packed. They are
- * used as a 64-bit word and a 32-bit word, but they are not
- * declared like that to avoid unwanted padding.
- *
- * A branch contains:
- *
- * - The bottom bit is a non-zero tag.
- *
- * - A 47-bit bitmap that marks which twigs are present.
- *
- * - The 9-bit offset of the byte in the key which is used to find
- *   the child twig.
- *
- * - The 32-bit node reference of the twigs, which are a packed
- *   sparse vector of child nodes.
- *
- * A leaf contains:
- *
- * - A word-aligned pointer to the value, which can be up to 64 bits.
- *
- * - The offsetof() the dname pointer within the value, which must
- *   be less than 32 bits.
+ * Our internal organs
  */
-typedef struct qp_node {
-	uint32_t word[3];
-} qp_node;
+struct qp;
 
 /*
- * Information used by the allocator and garbage collector.
- *
- * `count` is the number of elements in the page and stats arrays.
- *
- * `here` is the page currently being used for allocation.
- *
- * `free` is the sum of all the per-page free counters.
- *
- * `gc_time` and `gc_space` summarize garbage collection performance.
- *
- * `page` is an array of pointers to pages.
- *
- * `usage` is an array containing information about each page.
- *
- * They are separate arrays because the usage counters are not
- * used in the fast path.
- */
-struct qp_stats {
-	double count, mean, var;
-};
-struct qp_usage {
-	uint32_t used, free;
-};
-struct qp_mem {
-	uint32_t count, here, free;
-	qp_node **page;
-	struct qp_usage *usage;
-	struct qp_stats gc_time, gc_space;
-};
-
-/*
- * A qp-trie
+ * A qp-trie is a pointer to its internals, plus a lock to ensure
+ * there is at most one writer at a time.
  */
 struct qp_trie {
-	/** count of number of elements */
-	size_t count;
-	/** the root node */
-	qp_node root;
-	/** memory */
-	struct qp_mem mem;
+	struct qp *qp;
+	/* write lock goes here*/
 };
 
 /*
- * Initialize a qp_trie
+ * A qp-cow is used during an update transaction. It contains a
+ * pointer to the old version of the tree, which will be flipped to
+ * the new tree when the transaction is complete; and a new version of
+ * the tree, which is an incrementally-modified copy-on-write overlay
+ * on the original tree.
  */
-struct qp_trie qp_empty(void);
+struct qp_cow {
+	/** new copy-on-write tree */
+	struct qp *cow;
+	/** old read-only tree */
+	struct qp_trie *ro;
+};
+
+/*
+ * Initialize a qp-trie
+ */
+void qp_init(struct qp_trie *t, region_type *region);
+
+/*
+ * Destroy a qp-trie.
+ */
+void qp_destroy(struct qp_trie *t, region_type *region);
+
+/*
+ * Number of elements in the tree
+ */
+uint32_t qp_count(struct qp *qp);
 
 /*
  * Neighbours of a newly added item
@@ -94,39 +60,45 @@ struct prev_next {
 /*
  * Add an item to a qp_trie, and return its neighbours
  */
-struct prev_next qp_add(struct qp_trie *t, void *val, const dname_type **dp);
+struct prev_next qp_add(struct qp *qp, void *val, const dname_type **dp);
 
 /*
  * Delete an entry from a qp_trie
  */
-void qp_del(struct qp_trie *t, const dname_type *dname);
+void qp_del(struct qp *qp, const dname_type *dname);
 
 /*
  * Find an exact match in a qp_trie
  *
  * Returns the associated value, or NULL
  */
-void *qp_get(struct qp_trie *t, const dname_type *dname);
+void *qp_get(struct qp *qp, const dname_type *dname);
 
 /*
  * Find dname or its nearest predecessor; return true if we found an exact match
  */
-int qp_find_le(struct qp_trie *t, const dname_type *dname, void **val);
+int qp_find_le(struct qp *qp, const dname_type *dname, void **val);
 
 /*
  * Invoke a function for each item in the tree
  */
-void qp_foreach(struct qp_trie *t, void (*fn)(void *val, void *ctx), void *ctx);
+void qp_foreach(struct qp *qp, void (*fn)(void *val, void *ctx), void *ctx);
 
 /*
- * Garbage collector.
+ * Prepare the tree for recycling, by copying it out of any
+ * fragmented pages into new tightly-filled pages.
  */
-void qp_compactify(struct qp_trie *t);
+void qp_compact(struct qp *qp);
 
 /*
- * Print memory statistics, and return the total used.
+ * Free any pages that are no longer used by the tree.
  */
-size_t qp_print_memstats(FILE *fp, struct qp_trie *t);
+void qp_release(struct qp *qp);
+
+/*
+ * Print memory statistics, and return the total bytes used.
+ */
+size_t qp_print_memstats(FILE *fp, struct qp *qp);
 
 #endif /* QP_TRIE_H */
 

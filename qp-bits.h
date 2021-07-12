@@ -10,6 +10,13 @@
 #define QP_BITS_H
 
 /*
+ * C is not strict enough with its integer types for these typedefs to
+ * make significant improvements to type safety, but I think it's
+ * useful to have annotations saying what particular kind of number we
+ * are dealing with.
+ */
+
+/*
  * A bit of the right type
  */
 #define W1 ((uint64_t)1U)
@@ -27,6 +34,94 @@ typedef uint8_t qp_weight;
 typedef uint8_t qp_shift;
 
 /*
+ * Type of twig references.
+ * qp_ref == QP_PAGE_SIZE * qp_page + qp_twig
+ */
+typedef uint32_t qp_ref;
+
+/*
+ * Type of page indexes.
+ */
+typedef uint32_t qp_page;
+
+/*
+ * Type of twig offsets / counters.
+ */
+typedef uint32_t qp_twig;
+
+/*
+ * Accumulators for measuring mean and standard deviation.
+ */
+struct qp_stats {
+	double count, mean, var;
+};
+
+/*
+ * Per-page allocation counters. These both increase monotonically;
+ * the `used` counter is also the allocation point. The `keep` counter
+ * is non-zero when the page is shared.
+ */
+struct qp_usage {
+	qp_twig keep, used, free;
+};
+
+/*
+ * A qp-trie node can be a leaf or a branch. It consists of three
+ * 32-bit words into which the components are packed. They are
+ * used as a 64-bit word and a 32-bit word, but they are not
+ * declared like that to avoid unwanted padding.
+ *
+ * A branch contains:
+ *
+ * - The bottom bit is a non-zero tag.
+ *
+ * - A 47-bit bitmap that marks which twigs are present.
+ *
+ * - The 9-bit offset of the byte in the key which is used to find
+ *   the child twig.
+ *
+ * - The 32-bit node reference of the twigs, which are a packed
+ *   sparse vector of child nodes.
+ *
+ * A leaf contains:
+ *
+ * - A word-aligned pointer to the value, which can be up to 64 bits.
+ *
+ * - The offsetof() the dname pointer within the value, which must
+ *   be less than 32 bits.
+ */
+typedef struct qp_node {
+	uint32_t word[3];
+} qp_node;
+
+/*
+ * Metadata for a qp-trie. The `root` and `base` members are used in
+ * the lookup fast path. The rest of the members of this structure
+ * support the allocator and garbage collector. The `base` and `usage`
+ * arrays are separate because `base` is hot and `usage` is cold
+ * (except during updates).
+ */
+struct qp {
+	/** number of leaf nodes */
+	qp_twig leaves;
+	/** the root node */
+	qp_node root;
+	/** array of pointers to pages */
+	qp_node **base;
+	/** array of per-page allocation counters */
+	struct qp_usage *usage;
+	/** number of pages in the arrays */
+	qp_page pages;
+	/** which page is used for allocations */
+	qp_page bump;
+	/** total of all usage[].free counters */
+	qp_twig garbage;
+	/** garbage collection performance summaries */
+	struct qp_stats compact_time, compact_space;
+	struct qp_stats release_time, release_space;
+};
+
+/*
  * Type of a trie lookup key.
  *
  * A lookup key is an array of bit numbers. A domain name can be up to
@@ -41,34 +136,30 @@ typedef uint8_t qp_shift;
 typedef qp_shift qp_key[512];
 
 /*
- * Type of twig references, which are relative to the tree's page table.
- */
-typedef uint32_t qp_ref;
-
-/*
  * Number of nodes in a page. Should be a power of 2.
  */
-#define QP_PAGE_SIZE ((uint32_t)(1U << 12))
+#define QP_PAGE_SIZE (1U << 12)
 #define QP_PAGE_BYTES (QP_PAGE_SIZE * sizeof(qp_node))
 
-static inline uint32_t refpage(qp_ref ref) { return(ref / QP_PAGE_SIZE); }
+static inline qp_page refpage(qp_ref ref) { return(ref / QP_PAGE_SIZE); }
 
-static inline uint32_t reftwig(qp_ref ref) { return(ref % QP_PAGE_SIZE); }
+static inline qp_twig reftwig(qp_ref ref) { return(ref % QP_PAGE_SIZE); }
 
 /*
  * Convert a twig reference into a pointer.
  */
 static inline qp_node *
-refptr(struct qp_trie *t, qp_ref ref) {
-	return(t->mem.page[refpage(ref)] + reftwig(ref));
+refptr(struct qp *qp, qp_ref ref) {
+	return(qp->base[refpage(ref)] + reftwig(ref));
 }
 
 /*
  * How many twigs are actually in use in a page?
  */
-static inline uint32_t
-pageusage(struct qp_trie *t, uint32_t page) {
-	return(t->mem.usage[page].used - t->mem.usage[page].free);
+static inline qp_twig
+pageusage(struct qp *qp, qp_page page) {
+	struct qp_usage usage = qp->usage[page];
+	return(usage.keep + usage.used - usage.free);
 }
 
 /*
@@ -79,7 +170,7 @@ pageusage(struct qp_trie *t, uint32_t page) {
 /*
  * Compactify proactively when we pass this threshold.
  */
-#define QP_MAX_FREE ((uint32_t)(1U << 20))
+#define QP_MAX_GARBAGE (1U << 20)
 
 /*
  * In a branch the 64-bit word contains the tag, bitmap, and offset.
@@ -121,8 +212,8 @@ isbranch(qp_node *n) {
  */
 static inline uint64_t
 node64(qp_node *n) {
-	uint64_t lo = (uint64_t)n->word[0];
-	uint64_t hi = (uint64_t)n->word[1];
+	uint64_t lo = n->word[0];
+	uint64_t hi = n->word[1];
 	return(lo | (hi << 32));
 }
 
@@ -140,7 +231,7 @@ node32(qp_node *n) {
 static inline qp_node
 newnode(uint64_t word64, uint32_t word32) {
 	qp_node node = {
-		(uint32_t)word64,
+		(uint32_t)(word64),
 		(uint32_t)(word64 >> 32),
 		word32,
 	};
@@ -166,12 +257,13 @@ leafname(qp_node *n) {
 }
 
 /*
- * Create a leaf node from its parts
+ * Create a leaf node from its parts, We use int64_t rather than
+ * ptrdiff_t to avoid undefined behaviour on 32-bit systems.
  */
 static inline qp_node
 newleaf(const void *val, const void *ppd) {
-	ptrdiff_t off = (const unsigned char *)ppd - (const unsigned char *)val;
-	assert(0 <= off && off < ((ptrdiff_t)1 << 32));
+	int64_t off = (const unsigned char *)ppd - (const unsigned char *)val;
+	assert(0 <= off && off < ((int64_t)1 << 32));
 	qp_node leaf = newnode((uint64_t)val, (uint32_t)off);
 	assert(!isbranch(&leaf));
 	return(leaf);
@@ -189,8 +281,8 @@ twigref(qp_node *n) {
  * Get a pointer to a branch node's child twigs.
  */
 static inline qp_node *
-twigbase(struct qp_trie *t, qp_node *n) {
-	return(refptr(t, twigref(n)));
+twigbase(struct qp *qp, qp_node *n) {
+	return(refptr(qp, twigref(n)));
 }
 
 /*
@@ -255,8 +347,8 @@ twigpos(qp_node *n, qp_shift bit) {
  * Get the twig at the given position.
  */
 static inline qp_node *
-twig(struct qp_trie *t, qp_node *n, qp_weight pos) {
-	return(twigbase(t, n) + pos);
+twig(struct qp *qp, qp_node *n, qp_weight pos) {
+	return(twigbase(qp, n) + pos);
 }
 
 /*

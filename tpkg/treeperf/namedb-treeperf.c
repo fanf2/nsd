@@ -134,8 +134,8 @@ domain_table_type *domain_table_create(region_type *region)
   table->nametree = nametree_create(region, &namedb_domain_name);
   table->nametree->root = nametree_tag_leaf(root);
 #elif defined(TREEPERF_USE_QP)
-  table->nametree = qp_empty();
-  qp_add(&table->nametree, root, &root->dname);
+  qp_init(&table->nametree, region);
+  qp_add(table->nametree.qp, root, &root->dname);
 #elif defined(TREEPERF_USE_RADTREE)
   table->nametree = radix_tree_create(region);
   root->rnode = radname_insert(
@@ -179,7 +179,7 @@ domain_table_search(
   exact = (*closest_match != NULL);
   *closest_match = nametree_untag_leaf(*path.levels[path.height - 1].noderef);
 #elif defined(TREEPERF_USE_QP)
-  exact = qp_find_le(&table->nametree, dname, &val);
+  exact = qp_find_le(table->nametree.qp, dname, &val);
   *closest_match = val;
 #elif defined(TREEPERF_USE_RADTREE)
   exact = radname_find_less_equal(
@@ -267,7 +267,7 @@ domain_table_insert(
     assert(leaf == result);
     path.height--; /* reuse path */
 #elif defined(TREEPERF_USE_QP)
-    pn = qp_add(&table->nametree, result, &result->dname);
+    pn = qp_add(table->nametree.qp, result, &result->dname);
     if(pn.prev != NULL) {
 	    result->prev = pn.prev;
 	    result->prev->next = result;

@@ -520,7 +520,7 @@ static void
 zonestatid_tree_set(struct nsd* nsd)
 {
 #if defined(USE_QP_TRIE)
-	qp_foreach(&nsd->db->zonetree, zonestatid_tree_set_fn, nsd);
+	qp_foreach(nsd->db->zonetree.qp, zonestatid_tree_set_fn, nsd);
 #else
 	struct radnode* n;
 	for(n=radix_first(nsd->db->zonetree); n; n=radix_next(n)) {
@@ -1686,7 +1686,7 @@ add_all_soa_to_task(struct nsd* nsd, struct udb_base* taskudb)
 	} ctx = { taskudb , &task_last };
 
 	udb_ptr_init(&task_last, taskudb);
-	qp_foreach(&nsd->db->zonetree, add_all_soa_to_task_fn, &ctx);
+	qp_foreach(nsd->db->zonetree.qp, add_all_soa_to_task_fn, &ctx);
 	udb_ptr_unlink(&task_last, taskudb);
 #else
 	struct radnode* n;

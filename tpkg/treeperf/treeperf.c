@@ -113,6 +113,8 @@ int main(int argc, char *argv[])
   struct domain_table *table = NULL;
   struct domain *domain;
 
+  struct timespec tv, tv0, tv1;
+
   static struct dname *dname_list[MAX_DOMAINS];
   int count, i;
 
@@ -144,6 +146,8 @@ int main(int argc, char *argv[])
     exit(1);
   }
 
+  get_time(&tv0);
+
   count = 0;
   while (count < MAX_DOMAINS &&
 	 fgets(line, sizeof(line), file) != NULL) {
@@ -170,13 +174,18 @@ int main(int argc, char *argv[])
   }
 
 #ifdef TREEPERF_USE_QP
-    qp_compactify(&table->nametree);
+  qp_compact(table->nametree.qp);
+  qp_release(table->nametree.qp);
 #endif
+
+  get_time(&tv);
+  timespec_subtract(&tv, &tv0);
 
   if (mode == TIME) {
 
     time_lookups("yxdomain", table, dname_list, count);
 
+    get_time(&tv0);
     for (i = 0; i < count; i++) {
       struct domain *match, *encloser;
       dname = dname_list[i];
@@ -184,9 +193,13 @@ int main(int argc, char *argv[])
 	typo_dname(dname);
       }
     }
+    get_time(&tv1);
+    timespec_subtract(&tv1, &tv0);
+    timespec_add(&tv, &tv1);
 
     time_lookups("typo    ", table, dname_list, count);
 
+    get_time(&tv0);
     for (i = 0; i < count; i++) {
       struct domain *match, *encloser;
       do {
@@ -195,8 +208,13 @@ int main(int argc, char *argv[])
 	dname_list[i] = random_dname(dname_region);
       } while(domain_table_search(table, dname, &match, &encloser));
     }
+    get_time(&tv1);
+    timespec_subtract(&tv1, &tv0);
+    timespec_add(&tv, &tv1);
 
     time_lookups("nxdomain", table, dname_list, count);
+
+    printf("overhead %ld.%09ld seconds\n", tv.tv_sec, tv.tv_nsec);
   }
 
   for (i = 0; i < count; i++) {
@@ -207,7 +225,7 @@ int main(int argc, char *argv[])
   if (mode == COUNT) {
 #ifdef TREEPERF_USE_QP
     size_t total = 0;
-    total += qp_print_memstats(stdout, &table->nametree);
+    total += qp_print_memstats(stdout, table->nametree.qp);
     total += print_talloc_stats();
     printf("%zu total allocated (%.3f MiB)\n",
 	   total, (double)total / 1048576);

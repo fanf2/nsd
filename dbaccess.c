@@ -261,7 +261,7 @@ namedb_zone_create(namedb_type* db, const dname_type* dname,
 	zone->apex->is_apex = 1;
 #if defined(USE_QP_TRIE)
 	zone->dname = zone->apex->dname;
-	qp_add(&db->zonetree, zone, &zone->dname);
+	qp_add(db->zonetree.qp, zone, &zone->dname);
 #endif
 	zone->soa_rrset = NULL;
 	zone->soa_nx_rrset = NULL;
@@ -291,7 +291,7 @@ namedb_zone_delete(namedb_type* db, zone_type* zone)
 {
 	/* RRs and UDB and NSEC3 and so on must be already deleted */
 #if defined(USE_QP_TRIE)
-	qp_del(&db->zonetree, domain_dname(zone->apex));
+	qp_del(db->zonetree.qp, domain_dname(zone->apex));
 #else
 	radix_delete(db->zonetree, zone->node);
 #endif
@@ -446,7 +446,7 @@ namedb_open (const char* filename, struct nsd_options* opt)
 	db->region = db_region;
 	db->domains = domain_table_create(db->region);
 #if defined(USE_QP_TRIE)
-	db->zonetree = qp_empty();
+	qp_init(&db->zonetree, db_region);
 #else
 	db->zonetree = radix_tree_create(db->region);
 #endif

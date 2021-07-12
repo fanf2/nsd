@@ -217,7 +217,7 @@ domain_table_count(domain_table_type* table)
 #ifdef USE_RADIX_TREE
 	return table->nametree->count;
 #elif defined(USE_QP_TRIE)
-	return table->nametree.count;
+	return qp_count(table->nametree.qp);
 #else
 	return table->names_to_domains->count;
 #endif

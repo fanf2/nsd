@@ -45,7 +45,7 @@ struct check_ctx {
  * walk a tree and check it is consistent
  */
 static void
-qp_check_node(struct qp_trie *t, qp_node *n, struct check_ctx *ctx, size_t min_off) {
+qp_check_node(struct qp *qp, qp_node *n, struct check_ctx *ctx, size_t min_off) {
 	if(isbranch(n)) {
 		qp_weight max, i;
 		size_t off;
@@ -58,7 +58,7 @@ qp_check_node(struct qp_trie *t, qp_node *n, struct check_ctx *ctx, size_t min_o
 		CuAssert(tc, "check_node max twigs",
 			 max <= (SHIFT_OFFSET - SHIFT_NOBYTE));
 		for(i = 0; i < max; i++) {
-			qp_check_node(t, twig(t, n, i), ctx, off + 1);
+			qp_check_node(qp, twig(qp, n, i), ctx, off + 1);
 		}
 	} else {
 		struct elem *e = leafval(n);
@@ -94,16 +94,16 @@ qp_check_node(struct qp_trie *t, qp_node *n, struct check_ctx *ctx, size_t min_o
 }
 
 static void
-qp_check(struct qp_trie *t) {
+qp_check(struct qp *qp) {
 	struct check_ctx ctx = { 0, NULL, NULL };
 	if(fast) return;
-	if(t->count == 0) {
+	if(qp->leaves == 0) {
 		CuAssert(tc, "check empty node",
-			 node64(&t->root) == 0 &&
-			 node32(&t->root) == 0);
+			 node64(&qp->root) == 0 &&
+			 node32(&qp->root) == 0);
 	} else {
-		qp_check_node(t, &t->root, &ctx, 0);
-		CuAssert(tc, "check count", ctx.count == t->count);
+		qp_check_node(qp, &qp->root, &ctx, 0);
+		CuAssert(tc, "check count", ctx.count == qp->leaves);
 		CuAssertPtrEq(tc, "check last item",
 			      ctx.next, NULL);
 	}
@@ -149,7 +149,7 @@ print_bitmap(qp_node *n) {
 }
 
 void
-qp_dump(struct qp_trie *t, qp_node *n, int d) {
+qp_dump(struct qp *qp, qp_node *n, int d) {
 	qp_shift bit;
 	int dd;
 	if(isbranch(n)) {
@@ -162,7 +162,7 @@ qp_dump(struct qp_trie *t, qp_node *n, int d) {
 				printf("qp_dump%*s twig ", d, "");
 				print_bit(bit);
 				putchar('\n');
-				qp_dump(t, twig(t, n, twigpos(n, bit)), dd);
+				qp_dump(qp, twig(qp, n, twigpos(n, bit)), dd);
 			}
 		}
 	} else {
@@ -223,7 +223,7 @@ recycle_dname(region_type *region, const dname_type *dname) {
 }
 
 static struct elem *
-add_elem(region_type *region, struct qp_trie *t, const dname_type *dname) {
+add_elem(region_type *region, struct qp *qp, const dname_type *dname) {
 	struct elem *e;
 	struct prev_next pn;
 
@@ -232,11 +232,11 @@ add_elem(region_type *region, struct qp_trie *t, const dname_type *dname) {
 
 	if(v) printf("add_elem %p %s\n", e, dname_to_string(dname, NULL));
 
-	pn = qp_add(t, e, &e->dname);
+	pn = qp_add(qp, e, &e->dname);
 	e->prev = pn.prev;
 	e->next = pn.next;
 	CuAssertPtrEq(tc, "add_elem elem in tree",
-		      qp_get(t, e->dname), e);
+		      qp_get(qp, e->dname), e);
 
 	if(e->prev != NULL) {
 		CuAssertPtrEq(tc, "add_elem prev consistent",
@@ -249,43 +249,43 @@ add_elem(region_type *region, struct qp_trie *t, const dname_type *dname) {
 		e->next->prev = e;
 	}
 
-	if(v) qp_dump(t, &t->root, 0);
-	qp_check(t);
+	if(v) qp_dump(qp, &qp->root, 0);
+	qp_check(qp);
 
 	return(e);
 }
 
 static struct elem *
-add_random_elem(region_type *region, struct qp_trie *t) {
+add_random_elem(region_type *region, struct qp *qp) {
 	const dname_type *dname;
 
 	for(;;) {
 		dname = random_dname(region);
-		if(qp_get(t, dname) == NULL)
+		if(qp_get(qp, dname) == NULL)
 			break;
 		recycle_dname(region, dname);
 	}
-	return(add_elem(region, t, dname));
+	return(add_elem(region, qp, dname));
 }
 
 static void
-del_elem(region_type *region, struct qp_trie *t, struct elem *e) {
+del_elem(region_type *region, struct qp *qp, struct elem *e) {
 
 	if(v) printf("del_elem %p %s\n", e, dname_to_string(e->dname, NULL));
 
 	CuAssertPtrEq(tc, "del_elem elem in tree",
-		      qp_get(t, e->dname), e);
-	qp_del(t, e->dname);
+		      qp_get(qp, e->dname), e);
+	qp_del(qp, e->dname);
 	CuAssertPtrEq(tc, "del_elem elem not in tree",
-		      qp_get(t, e->dname), NULL);
+		      qp_get(qp, e->dname), NULL);
 
 	if(e->prev) e->prev->next = e->next;
 	if(e->next) e->next->prev = e->prev;
 	recycle_dname(region, e->dname);
 	region_recycle(region, e, sizeof(*e));
 
-	if(v) qp_dump(t, &t->root, 0);
-	qp_check(t);
+	if(v) qp_dump(qp, &qp->root, 0);
+	qp_check(qp);
 }
 
 static void
@@ -314,7 +314,7 @@ static void
 cutest_qp(CuTest *ttc)
 {
 	struct region *region = region_create(xalloc, free);
-	struct qp_trie t = qp_empty();
+	struct qp_trie t;
 	struct elem *first, *e;
 	const dname_type *dname;
 	void *val;
@@ -322,11 +322,13 @@ cutest_qp(CuTest *ttc)
 
 	tc = ttc;
 
+	qp_init(&t, region);
+
 	first = NULL;
 	for(i = 0; i < 10000; i++) {
 		switch(random_generate(4)) {
 		case(0):
-			e = add_random_elem(region, &t);
+			e = add_random_elem(region, t.qp);
 			if(e->prev == NULL && first != NULL) {
 				CuAssertPtrEq(tc, "new elem before first",
 					      first->prev, e);
@@ -341,12 +343,12 @@ cutest_qp(CuTest *ttc)
 			if(e != NULL) {
 				if(e == first)
 					first = e->next;
-				del_elem(region, &t, e);
+				del_elem(region, t.qp, e);
 			}
 			continue;
 		case(2):
 			e = first;
-			qp_foreach(&t, elem_looper, &e);
+			qp_foreach(t.qp, elem_looper, &e);
 			CuAssertPtrEq(tc, "elem_looper expected last",
 				      e, NULL);
 			continue;
@@ -359,7 +361,7 @@ cutest_qp(CuTest *ttc)
 				printf("qp_find_le search %s\n",
 				       dname_to_string(dname, NULL));
 			}
-			if(qp_find_le(&t, dname, &val)) {
+			if(qp_find_le(t.qp, dname, &val)) {
 				e = val;
 				CuAssert(tc, "qp_find_le exact",
 					 dname_compare(dname, e->dname) == 0);
@@ -397,9 +399,9 @@ cutest_qp(CuTest *ttc)
 	while(first != NULL) {
 		e = first;
 		first = e->next;
-		del_elem(region, &t, e);
+		del_elem(region, t.qp, e);
 	}
-
+	qp_destroy(&t, region);
 	region_destroy(region);
 }
 

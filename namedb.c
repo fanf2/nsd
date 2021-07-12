@@ -283,7 +283,7 @@ do_deldomain(namedb_type* db, domain_type* domain)
 	if(prev != NULL) prev->next = next;
 	if(next != NULL) next->prev = prev;
 	domain->prev = domain->next = NULL;
-	qp_del(&db->domains->nametree, domain_dname(domain));
+	qp_del(db->domains->nametree.qp, domain_dname(domain));
 #else
 	rbtree_delete(db->domains->names_to_domains, domain->node.key);
 #endif
@@ -371,8 +371,8 @@ domain_table_create(region_type* region)
 	root->rnode = radname_insert(result->nametree, dname_name(root->dname),
 		root->dname->name_size, root);
 #elif defined(USE_QP_TRIE)
-	result->nametree = qp_empty();
-	qp_add(&result->nametree, root, &root->dname);
+	qp_init(&result->nametree, region);
+	qp_add(result->nametree.qp, root, &root->dname);
 #else
 	result->names_to_domains = rbtree_create(
 		region, (int (*)(const void *, const void *)) dname_compare);
@@ -410,7 +410,7 @@ domain_table_search(domain_table_type *table,
 		dname->name_size, (struct radnode**)closest_match);
 	*closest_match = (domain_type*)((*(struct radnode**)closest_match)->elem);
 #elif defined(USE_QP_TRIE)
-	exact = qp_find_le(&table->nametree, dname, &val);
+	exact = qp_find_le(table->nametree.qp, dname, &val);
 	*closest_match = val;
 #else
 	exact = rbtree_find_less_equal(table->names_to_domains, dname, (rbnode_type **) closest_match);
@@ -438,7 +438,7 @@ domain_table_find(domain_table_type* table,
 		  const dname_type* dname)
 {
 #if defined(USE_QP_TRIE)
-	return qp_get(&table->nametree, dname);
+	return qp_get(table->nametree.qp, dname);
 #else
 	domain_type* closest_match;
 	domain_type* closest_encloser;
@@ -483,7 +483,7 @@ domain_table_insert(domain_table_type* table,
 				dname_name(result->dname),
 				result->dname->name_size, result);
 #elif defined(USE_QP_TRIE)
-			pn = qp_add(&table->nametree, result, &result->dname);
+			pn = qp_add(table->nametree.qp, result, &result->dname);
 			if(pn.prev != NULL) {
 				result->prev = pn.prev;
 				result->prev->next = result;
@@ -701,7 +701,7 @@ zone_type *
 namedb_find_zone(namedb_type* db, const dname_type* dname)
 {
 #if defined(USE_QP_TRIE)
-	return qp_get(&db->zonetree, dname);
+	return qp_get(db->zonetree.qp, dname);
 #else
 	struct radnode* n = radname_search(db->zonetree, dname_name(dname),
 		dname->name_size);
