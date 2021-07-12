@@ -24,14 +24,6 @@ static double doubletime(void) {
 	return((double)t.tv_sec + t.tv_nsec / 1000000000.0);
 }
 
-/* avoid depending on math.h or -lm */
-static double sqrt(double n) {
-	double m = n/2, x = 1, y = 0;
-	while(x - y < -1E-6 || 1E-6 < x - y)
-		y = x, x = x/2 + m/x;
-	return(x);
-}
-
 /*
  * Percentiles would be more informative, but mean and standard
  * deviation are simple and enough to give us a rough idea of what is
@@ -39,18 +31,19 @@ static double sqrt(double n) {
  */
 static void
 stats_sample(struct qp_stats *stats, double sample) {
+	double delta = sample - stats->mean;
 	stats->count += 1;
-	stats->total += sample;
-	stats->square += sample * sample;
+	stats->mean += delta / stats->count;
+	stats->var += delta * (sample - stats->mean);
 }
-static double
-stats_mean(struct qp_stats *stats) {
-	return(stats->total / stats->count);
-}
+
+/* avoid depending on math.h or libm for square root */
 static double
 stats_sd(struct qp_stats *stats) {
-	double mean = stats_mean(stats);
-	return(sqrt(stats->square / stats->count - mean * mean));
+	double n = stats->var / stats->count;
+	double m = n / 2, y = n, x = m;
+	while(y != x) y = x, x = x/2 + m/x;
+	return(x);
 }
 
 static double
@@ -62,30 +55,31 @@ size_t
 qp_print_memstats(FILE *fp, struct qp_trie *t) {
 	struct qp_mem *m = &t->mem;
 	size_t max = m->count;
+	size_t total = 0;
 	size_t garbage = 0;
 	struct qp_stats stats = { 0, 0, 0 };
 	for(uint32_t i = 0; i < max; i++) {
 		uint32_t used = pageusage(t, i);
 		bool active = m->page[i] != NULL;
 		if(active)
-		stats_sample(&stats, used);
-		garbage += active && pageusage(t, i) < QP_MIN_USAGE;
+			stats_sample(&stats, used);
+		total += used;
+		garbage += active && used < QP_MIN_USAGE;
 	}
 	fprintf(fp, "%.0f/%zu entries in page table (%.2f%%)\n",
 		stats.count, max, stats.count * 100 / max);
-	fprintf(fp, "%.0f nodes used (%.3f MiB / %.3f MiB)\n",
-		stats.total, megabytes(stats.total),
+	fprintf(fp, "%zu nodes used (%.3f MiB / %.3f MiB)\n",
+		total, megabytes(total),
 		megabytes(stats.count * QP_PAGE_SIZE));
-	double mean = stats_mean(&stats);
 	fprintf(fp, "average usage %.1f +/- %.1f (%.2f%%)\n",
-		mean, stats_sd(&stats), mean * 100 / QP_PAGE_SIZE);
+		stats.mean, stats_sd(&stats), stats.mean * 100 / QP_PAGE_SIZE);
 	fprintf(fp, "%zu pages need compaction\n", garbage);
 	fprintf(fp, "%.0f garbage collections\n",
 		m->gc_time.count);
 	fprintf(fp, "GC time %.1f +/- %.1f ms\n",
-		stats_mean(&m->gc_time), stats_sd(&m->gc_time));
+		m->gc_time.mean, stats_sd(&m->gc_time));
 	fprintf(fp, "GC size %.1f +/- %.1f pages\n",
-		stats_mean(&m->gc_space), stats_sd(&m->gc_space));
+		m->gc_space.mean, stats_sd(&m->gc_space));
 	return(stats.count * QP_PAGE_BYTES);
 }
 

@@ -55,7 +55,7 @@ typedef struct qp_node {
  * used in the fast path.
  */
 struct qp_stats {
-	double count, total, square;
+	double count, mean, var;
 };
 struct qp_usage {
 	uint32_t used, free;
