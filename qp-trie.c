@@ -83,7 +83,8 @@ qp_print_memstats(FILE *fp, struct qp *qp) {
 	fprintf(fp, "GC size %.1f +/- %.1f pages\n",
 		qp->gc_space.mean, stats_sd(qp->gc_space));
 
-	return(stats.count * QP_PAGE_BYTES);
+	size_t elemsz = sizeof(*qp->base) + sizeof(*qp->usage);
+	return(stats.count * QP_PAGE_BYTES + pages * elemsz);
 }
 
 static void *
