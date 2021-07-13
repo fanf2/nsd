@@ -13,26 +13,19 @@
 struct qp;
 
 /*
- * A qp-trie is a pointer to its internals, plus a lock to ensure
- * there is at most one writer at a time.
+ * A qp-trie header contains a pointer to its internals.
+ *
+ * There is a second pointer used during an update transaction, plus a
+ * lock to ensure there is at most one writer at a time. The main `qp`
+ * pointer is the old version of the tree, which will be flipped to
+ * the new tree when the transaction is complete. The `cow` pointer is
+ * the new version of the tree, which is an incrementally-modified
+ * copy-on-write overlay on the original tree.
  */
 struct qp_trie {
-	struct qp *qp;
+	struct qp *qp, *cow;
+	region_type *region;
 	/* write lock goes here*/
-};
-
-/*
- * A qp-cow is used during an update transaction. It contains a
- * pointer to the old version of the tree, which will be flipped to
- * the new tree when the transaction is complete; and a new version of
- * the tree, which is an incrementally-modified copy-on-write overlay
- * on the original tree.
- */
-struct qp_cow {
-	/** new copy-on-write tree */
-	struct qp *cow;
-	/** old read-only tree */
-	struct qp_trie *ro;
 };
 
 /*
@@ -43,7 +36,17 @@ void qp_init(struct qp_trie *t, region_type *region);
 /*
  * Destroy a qp-trie.
  */
-void qp_destroy(struct qp_trie *t, region_type *region);
+void qp_destroy(struct qp_trie *t);
+
+/*
+ * Start an update transaction
+ */
+void qp_cow_start(struct qp_trie *t);
+
+/*
+ * Finish an update transaction
+ */
+void qp_cow_finish(struct qp_trie *t);
 
 /*
  * Number of elements in the tree
@@ -85,15 +88,10 @@ int qp_find_le(struct qp *qp, const dname_type *dname, void **val);
 void qp_foreach(struct qp *qp, void (*fn)(void *val, void *ctx), void *ctx);
 
 /*
- * Prepare the tree for recycling, by copying it out of any
- * fragmented pages into new tightly-filled pages.
+ * Copy fragmented pages of the tree to new tightly-packed pages, and
+ * free any unused pages.
  */
 void qp_compact(struct qp *qp);
-
-/*
- * Free any pages that are no longer used by the tree.
- */
-void qp_release(struct qp *qp);
 
 /*
  * Print memory statistics, and return the total bytes used.

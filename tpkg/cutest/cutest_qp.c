@@ -326,7 +326,7 @@ cutest_qp(CuTest *ttc)
 
 	first = NULL;
 	for(i = 0; i < 10000; i++) {
-		switch(random_generate(4)) {
+		switch(random_generate(5)) {
 		case(0):
 			e = add_random_elem(region, t.qp);
 			if(e->prev == NULL && first != NULL) {
@@ -353,6 +353,10 @@ cutest_qp(CuTest *ttc)
 				      e, NULL);
 			continue;
 		case(3):
+			qp_compact(t.qp);
+			qp_check(t.qp);
+			continue;
+		case(4):
 			if(random_generate(5) == 0)
 				dname = wildcard_dname(region);
 			else
@@ -401,7 +405,7 @@ cutest_qp(CuTest *ttc)
 		first = e->next;
 		del_elem(region, t.qp, e);
 	}
-	qp_destroy(&t, region);
+	qp_destroy(&t);
 	region_destroy(region);
 }
 

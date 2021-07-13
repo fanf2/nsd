@@ -76,19 +76,25 @@ qp_print_memstats(FILE *fp, struct qp *qp) {
 		stats.mean, stats_sd(stats), stats.mean * 100 / QP_PAGE_SIZE);
 	fprintf(fp, "%zu pages need GC\n", garbage);
 
-	fprintf(fp, "compacted %.0f x\n", qp->compact_time.count);
-	fprintf(fp, "compact time %.1f +/- %.1f ms\n",
-		qp->compact_time.mean, stats_sd(qp->compact_time));
-	fprintf(fp, "compact size %.1f +/- %.1f pages\n",
-		qp->compact_space.mean, stats_sd(qp->compact_space));
-
-	fprintf(fp, "released %.0f x\n", qp->release_time.count);
-	fprintf(fp, "release time %.1f +/- %.1f ms\n",
-		qp->release_time.mean, stats_sd(qp->release_time));
-	fprintf(fp, "release size %.1f +/- %.1f pages\n",
-		qp->release_space.mean, stats_sd(qp->release_space));
+	fprintf(fp, "%.0f garbage collections (total %.1f ms)\n",
+		qp->gc_time.count, qp->gc_time.count * qp->gc_time.mean);
+	fprintf(fp, "GC time %.1f +/- %.1f ms\n",
+		qp->gc_time.mean, stats_sd(qp->gc_time));
+	fprintf(fp, "GC size %.1f +/- %.1f pages\n",
+		qp->gc_space.mean, stats_sd(qp->gc_space));
 
 	return(stats.count * QP_PAGE_BYTES);
+}
+
+static void *
+clone(void *oldp, size_t oldsz, size_t newsz, size_t elemsz) {
+	oldsz *= elemsz, newsz *= elemsz;
+	unsigned char *newp = xalloc(newsz);
+	size_t copysz = oldsz < newsz ? oldsz : newsz;
+	size_t zerosz = newsz > copysz ? newsz - copysz : 0;
+	if(copysz > 0) memcpy(newp, oldp, copysz);
+	if(zerosz > 0) memset(newp + copysz, 0, zerosz);
+	return(newp);
 }
 
 static qp_ref
@@ -111,18 +117,13 @@ alloc_slow(struct qp *qp, qp_weight size) {
 
 	qp_page last = qp->pages;
 	qp_page pages = last + last/2 + 1;
-	qp_node **base = xalloc(pages * sizeof(*base));
-	struct qp_usage *usage = xalloc(pages * sizeof(*usage));
-
-	memcpy(base, qp->base, last * sizeof(*base));
-	memcpy(usage, qp->usage, last * sizeof(*usage));
-	memset(base + last, 0, (pages - last) * sizeof(*base));
-	memset(usage + last, 0, (pages - last) * sizeof(*usage));
-	free(qp->base);
-	free(qp->usage);
-	qp->base = base;
-	qp->usage = usage;
+	qp_node **base = qp->base;
+	struct qp_usage *usage = qp->usage;
+	qp->base = clone(base, last, pages, sizeof(*base));
+	qp->usage = clone(usage, last, pages, sizeof(*usage));
 	qp->pages = pages;
+	free(base);
+	free(usage);
 
 	return(alloc_page(qp, last, size));
 }
@@ -160,84 +161,152 @@ landfill(struct qp *qp, qp_ref twigs, qp_weight size) {
 static inline void
 garbage(struct qp *qp, qp_ref twigs, qp_weight size) {
 	landfill(qp, twigs, size);
-	if(qp->garbage > QP_MAX_GARBAGE) {
+	if(qp->garbage > QP_MAX_GARBAGE)
 		qp_compact(qp);
-		qp_release(qp);
-	}
 }
 
-static qp_twig
-compactify(struct qp *qp, qp_node *n) {
+static void
+defrag(struct qp *qp, qp_node *n) {
 	qp_node twigs[SHIFT_OFFSET];
 	qp_weight max = twigmax(n);
 	size_t size = max * sizeof(*twigs);
 	memcpy(twigs, twigbase(qp, n), size);
 
-	qp_twig used = 0;
 	for(qp_weight i = 0; i < max; i++)
 		if(isbranch(&twigs[i]))
-			used += compactify(qp, &twigs[i]);
+			defrag(qp, &twigs[i]);
 
 	qp_ref oldr = twigref(n);
 	if(pageusage(qp, refpage(oldr)) >= QP_MIN_USAGE &&
 	   memcmp(twigs, twigbase(qp, n), size) == 0)
-		return(used);
+		return;
 
 	qp_ref newr = alloc(qp, max);
 	qp_node *newp = refptr(qp, newr);
 	memcpy(newp, twigs, size);
 	*n = newnode(node64(n), newr);
 	landfill(qp, oldr, max);
-
-	return(used + max);
 }
 
-void
-qp_compact(struct qp *qp) {
-	double start = doubletime();
-	double used = 0;
-	alloc_reset(qp);
-	if(isbranch(&qp->root))
-		used += compactify(qp, &qp->root);
-	double end = doubletime();
-	stats_sample(&qp->compact_time, (end - start) * 1000);
-	stats_sample(&qp->compact_space, used / QP_PAGE_SIZE);
-}
-
-void
-qp_release(struct qp *qp) {
+static void
+recycle(struct qp *qp, qp_node **later) {
 	double start = doubletime();
 	qp_page pages = 0;
+
+	alloc_reset(qp);
+	if(isbranch(&qp->root))
+		defrag(qp, &qp->root);
+
 	for(qp_page p = 0; p < qp->pages; p++) {
+		if(p == qp->bump)
+			continue;
 		if(pageusage(qp, p) > 0)
 			continue;
-		free(qp->base[p]);
+		if(later != NULL)
+			later[p] = qp->base[p];
+		else
+			free(qp->base[p]);
 		qp->base[p] = NULL;
 		qp->garbage -= qp->usage[p].free;
 		memset(&qp->usage[p], 0, sizeof(qp->usage[p]));
 		++pages;
 	}
+
 	double end = doubletime();
-	stats_sample(&qp->release_time, (end - start) * 1000);
-	stats_sample(&qp->release_space, pages);
+	stats_sample(&qp->gc_time, (end - start) * 1000);
+	stats_sample(&qp->gc_space, pages);
+}
+
+void
+qp_compact(struct qp *qp) {
+	recycle(qp, NULL);
+}
+
+static void
+cleanup(void *vp) {
+	struct qp *qp = vp;
+	for(qp_page p = 0; p < qp->pages; p++)
+		if(qp->usage[p].keep == 0)
+			free(qp->base[p]);
+	free(qp->base);
+	free(qp->usage);
+}
+
+static void
+destroy(struct qp *qp, region_type *region) {
+	cleanup(qp);
+	region_recycle(region, qp, sizeof(*qp));
+	region_remove_cleanup(region, cleanup, qp);
+}
+
+void
+qp_destroy(struct qp_trie *t) {
+	if(t->cow)
+		destroy(t->cow, t->region);
+	destroy(t->qp, t->region);
+	t->region = NULL;
+	t->cow = NULL;
+	t->qp = NULL;
 }
 
 void
 qp_init(struct qp_trie *t, region_type *region) {
 	struct qp *qp = region_alloc_zero(region, sizeof(*qp));
 	alloc_reset(qp);
+	region_add_cleanup(region, cleanup, qp);
+	t->region = region;
+	t->cow = NULL;
 	t->qp = qp;
 }
 
 void
-qp_destroy(struct qp_trie *t, region_type *region) {
-	struct qp *qp = t->qp;
-	for(qp_page p = 0; p < qp->pages; p++)
-		free(qp->base[p]);
-	free(qp->base);
-	free(qp->usage);
-	region_recycle(region, qp, sizeof(*qp));
-	t->qp = NULL;
+qp_cow_start(struct qp_trie *t) {
+	/* TODO: take write lock */
+
+	region_type *region = t->region;
+	qp_page pages = t->qp->pages;
+	struct qp *old = t->qp;
+	struct qp *new = region_alloc(region, sizeof(*new));
+
+	memcpy(new, old, sizeof(*new));
+	new->base = clone(old->base, pages, pages, sizeof(*old->base));
+	new->usage = clone(old->usage, pages, pages, sizeof(*old->usage));
+
+	for(qp_page p = 0; p < pages; p++)
+		new->usage[p].keep = new->usage[p].used;
+
+	alloc_reset(new);
+	region_add_cleanup(region, cleanup, new);
+	t->cow = new;
+}
+
+void
+qp_cow_finish(struct qp_trie *t) {
+	region_type *region = t->region;
+	struct qp *old = t->qp;
+	struct qp *new = t->cow;
+	qp_page pages = new->pages;
+
+	for(qp_page p = 0; p < pages; p++)
+		new->usage[p].keep = 0;
+
+	qp_node **later = clone(NULL, 0, pages, sizeof(*later));
+	recycle(new, later);
+
+	/* TODO: atomic swap */
+	t->qp = new;
+	/* TODO: wait for readers */
+
+	for(qp_page p = 0; p < pages; p++)
+		free(later[p]);
+	free(later);
+	free(old->base);
+	free(old->usage);
+	region_recycle(region, old, sizeof(*old));
+	region_remove_cleanup(region, cleanup, old);
+	t->cow = NULL;
+
+	/* TODO: release write lock */
 }
 
 uint32_t

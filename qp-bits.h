@@ -117,8 +117,7 @@ struct qp {
 	/** total of all usage[].free counters */
 	qp_twig garbage;
 	/** garbage collection performance summaries */
-	struct qp_stats compact_time, compact_space;
-	struct qp_stats release_time, release_space;
+	struct qp_stats gc_time, gc_space;
 };
 
 /*
