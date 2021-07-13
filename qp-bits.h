@@ -176,8 +176,8 @@ leafval(qp_node *n) {
 static inline const dname_type *
 leafname(qp_node *n) {
 	const unsigned char *val = leafval(n);
-	const void *ppdname = val + node32(n);
-	return(*(const dname_type **)ppdname);
+	return(val == NULL ? NULL :
+	       *(const dname_type **)(val + node32(n)));
 }
 
 /*
@@ -249,12 +249,12 @@ pageusage(struct qp *qp, qp_page page) {
 /*
  * The page needs recycling if its usage is less than this threshold.
  */
-#define QP_MIN_USAGE (QP_PAGE_SIZE - QP_PAGE_SIZE / 16)
+#define QP_MIN_USAGE (QP_PAGE_SIZE - QP_PAGE_SIZE / 8)
 
 /*
  * Compactify proactively when we pass this threshold.
  */
-#define QP_MAX_GARBAGE (1U << 20)
+#define QP_MAX_GARBAGE (1U << 24)
 
 /*
  * Get a reference to a branch node's child twigs.

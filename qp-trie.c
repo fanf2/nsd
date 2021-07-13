@@ -37,7 +37,7 @@ stats_sample(struct qp_stats *stats, double sample) {
 	stats->var += delta * (sample - stats->mean);
 }
 
-/* avoid depending on math.h or libm for square root */
+/* square root with Newton's method to avoid math.h or libm */
 static double
 stats_sd(struct qp_stats stats) {
 	double n = stats.var / stats.count;
@@ -141,7 +141,7 @@ static inline qp_ref
 alloc(struct qp *qp, qp_weight size) {
 	qp_page page = qp->bump;
 	qp_twig twig = qp->usage[page].used;
-	if(QP_PAGE_SIZE > twig + size) {
+	if(QP_PAGE_SIZE >= twig + size) {
 		qp->usage[page].used += size;
 		return(QP_PAGE_SIZE * page + twig);
 	} else {
@@ -166,27 +166,32 @@ garbage(struct qp *qp, qp_ref twigs, qp_weight size) {
 		qp_compact(qp);
 }
 
+#define twigmove(p, q, max) memmove(p, q, (max) * sizeof(qp_node))
+#define twigdiff(p, q, max) memcmp(p, q, (max) * sizeof(qp_node))
+
+static inline void
+evacuate(struct qp *qp, qp_node *n, qp_node *twigs) {
+	if(twigs == NULL) twigs = twigbase(qp, n);
+	qp_weight max = twigmax(n);
+	qp_ref ref = alloc(qp, max);
+	landfill(qp, twigref(n), max);
+	twigmove(refptr(qp, ref), twigs, max);
+	*n = newnode(node64(n), ref);
+}
+
 static void
 defrag(struct qp *qp, qp_node *n) {
 	qp_node twigs[SHIFT_OFFSET];
 	qp_weight max = twigmax(n);
-	size_t size = max * sizeof(*twigs);
-	memcpy(twigs, twigbase(qp, n), size);
+	twigmove(twigs, twigbase(qp, n), max);
 
 	for(qp_weight i = 0; i < max; i++)
 		if(isbranch(&twigs[i]))
 			defrag(qp, &twigs[i]);
 
-	qp_ref oldr = twigref(n);
-	if(pageusage(qp, refpage(oldr)) >= QP_MIN_USAGE &&
-	   memcmp(twigs, twigbase(qp, n), size) == 0)
-		return;
-
-	qp_ref newr = alloc(qp, max);
-	qp_node *newp = refptr(qp, newr);
-	memcpy(newp, twigs, size);
-	*n = newnode(node64(n), newr);
-	landfill(qp, oldr, max);
+	if(pageusage(qp, refpage(twigref(n))) < QP_MIN_USAGE
+	   || twigdiff(twigs, twigbase(qp, n), max))
+		evacuate(qp, n, twigs);
 }
 
 static void
@@ -390,7 +395,7 @@ qp_get(struct qp *qp, const dname_type *dname) {
 			return(NULL);
 		n = twig(qp, n, twigpos(n, bit));
 	}
-	if(leafval(n) != NULL && dname_equal(dname, leafname(n)))
+	if(dname_equal(dname, leafname(n)))
 		return(leafval(n));
 	else
 		return(NULL);
@@ -406,14 +411,13 @@ qp_del(struct qp *qp, const dname_type *dname) {
 	size_t len = dname_to_key(dname, key);
 	qp_shift bit = 0;
 	qp_weight pos, max;
-	qp_ref oldr, newr;
-	qp_node *oldp, *newp;
+	qp_node *twigs;
 	qp_node *p = NULL;
 	while(isbranch(n)) {
-		__builtin_prefetch(twigbase(qp, n));
 		bit = twigbit(n, key, len);
 		if(!hastwig(n, bit))
 			return;
+		evacuate(qp, n, NULL);
 		p = n; n = twig(qp, n, twigpos(n, bit));
 	}
 	if(!dname_equal(dname, leafname(n))) {
@@ -430,24 +434,19 @@ qp_del(struct qp *qp, const dname_type *dname) {
 	assert(bit != 0);
 	pos = twigpos(n, bit);
 	max = twigmax(n);
-	oldr = twigref(n);
 	if(max == 2) {
 		// move the other twig to the parent branch.
 		*n = *twig(qp, n, !pos);
 		qp->leaves--;
-		garbage(qp, oldr, max);
-		return;
+		garbage(qp, twigref(n), 2);
+	} else {
+		// shrink the twigs we just evacuated
+		*n = newnode(node64(n) & ~(W1 << bit), twigref(n));
+		twigs = twigbase(qp, n);
+		twigmove(twigs+pos, twigs+pos+1, max-pos-1);
+		qp->leaves--;
+		garbage(qp, twigref(n), 1);
 	}
-	// shrink twigs
-	newr = alloc(qp, max - 1);
-	*n = newnode(node64(n) & ~(W1 << bit), newr);
-	oldp = refptr(qp, oldr);
-	newp = refptr(qp, newr);
-	memcpy(newp, oldp, pos * sizeof(qp_node));
-	memcpy(newp+pos, oldp+pos+1, (max-pos-1) * sizeof(qp_node));
-	qp->leaves--;
-	garbage(qp, oldr, max);
-	return;
 }
 
 static inline qp_node *
@@ -549,11 +548,11 @@ newkey:
 	// find where to insert a branch or grow an existing branch.
 	n = &qp->root;
 	while(isbranch(n)) {
-		__builtin_prefetch(twigbase(qp, n));
 		if(off < keyoff(n))
 			goto newbranch;
 		if(off == keyoff(n))
 			goto growbranch;
+		evacuate(qp, n, NULL);
 		bit = twigbit(n, newk, newl);
 		assert(hastwig(n, bit));
 		// keep track of adjacent nodes
@@ -625,7 +624,7 @@ qp_find_le(struct qp *qp, const dname_type *dname, void **pval) {
 		*pval = NULL;
 		return(0);
 	}
-	// fast check for exact match
+	// exact match
 	if(dname_equal(dname, leafname(n))) {
 		*pval = leafval(n);
 		return(1);
