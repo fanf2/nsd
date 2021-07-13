@@ -50,77 +50,6 @@ typedef uint32_t qp_page;
 typedef uint32_t qp_twig;
 
 /*
- * Accumulators for measuring mean and standard deviation.
- */
-struct qp_stats {
-	double count, mean, var;
-};
-
-/*
- * Per-page allocation counters. These both increase monotonically;
- * the `used` counter is also the allocation point. The `keep` counter
- * is non-zero when the page is shared.
- */
-struct qp_usage {
-	qp_twig keep, used, free;
-};
-
-/*
- * A qp-trie node can be a leaf or a branch. It consists of three
- * 32-bit words into which the components are packed. They are
- * used as a 64-bit word and a 32-bit word, but they are not
- * declared like that to avoid unwanted padding.
- *
- * A branch contains:
- *
- * - The bottom bit is a non-zero tag.
- *
- * - A 47-bit bitmap that marks which twigs are present.
- *
- * - The 9-bit offset of the byte in the key which is used to find
- *   the child twig.
- *
- * - The 32-bit node reference of the twigs, which are a packed
- *   sparse vector of child nodes.
- *
- * A leaf contains:
- *
- * - A word-aligned pointer to the value, which can be up to 64 bits.
- *
- * - The offsetof() the dname pointer within the value, which must
- *   be less than 32 bits.
- */
-typedef struct qp_node {
-	uint32_t word[3];
-} qp_node;
-
-/*
- * Metadata for a qp-trie. The `root` and `base` members are used in
- * the lookup fast path. The rest of the members of this structure
- * support the allocator and garbage collector. The `base` and `usage`
- * arrays are separate because `base` is hot and `usage` is cold
- * (except during updates).
- */
-struct qp {
-	/** number of leaf nodes */
-	qp_twig leaves;
-	/** the root node */
-	qp_node root;
-	/** array of pointers to pages */
-	qp_node **base;
-	/** array of per-page allocation counters */
-	struct qp_usage *usage;
-	/** number of pages in the arrays */
-	qp_page pages;
-	/** which page is used for allocations */
-	qp_page bump;
-	/** total of all usage[].free counters */
-	qp_twig garbage;
-	/** garbage collection performance summaries */
-	struct qp_stats gc_time, gc_space;
-};
-
-/*
  * Type of a trie lookup key.
  *
  * A lookup key is an array of bit numbers. A domain name can be up to
@@ -135,41 +64,37 @@ struct qp {
 typedef qp_shift qp_key[512];
 
 /*
- * Number of nodes in a page. Should be a power of 2.
+ * Accumulators for measuring mean and standard deviation.
  */
-#define QP_PAGE_SIZE (1U << 12)
-#define QP_PAGE_BYTES (QP_PAGE_SIZE * sizeof(qp_node))
-
-static inline qp_page refpage(qp_ref ref) { return(ref / QP_PAGE_SIZE); }
-
-static inline qp_twig reftwig(qp_ref ref) { return(ref % QP_PAGE_SIZE); }
+struct qp_stats {
+	double count, mean, var;
+};
 
 /*
- * Convert a twig reference into a pointer.
+ * Per-page allocation counters. The `used` and `free` counters
+ * increase monotonically; the `used` counter is also the allocation
+ * point. The `keep` counter is non-zero when the page is shared.
  */
-static inline qp_node *
-refptr(struct qp *qp, qp_ref ref) {
-	return(qp->base[refpage(ref)] + reftwig(ref));
-}
+struct qp_usage {
+	qp_twig keep, used, free;
+};
 
 /*
- * How many twigs are actually in use in a page?
+ * A qp-trie node can be a leaf or a branch. It consists of three
+ * 32-bit words into which the components are packed. They are
+ * used as a 64-bit word and a 32-bit word, but they are not
+ * declared like that to avoid unwanted padding.
+ *
+ * In a branch the layout of the 64-bit word is as described in the
+ * enum below. The 32-bit word is a twig reference.
+ *
+ * In a leaf, the 64-bit word contains a word-aligned pointer to the
+ * value, and the 32-bit word is the offsetof() the dname pointer
+ * within the value.
  */
-static inline qp_twig
-pageusage(struct qp *qp, qp_page page) {
-	struct qp_usage usage = qp->usage[page];
-	return(usage.keep + usage.used - usage.free);
-}
-
-/*
- * The page needs recycling if its usage is less than this threshold.
- */
-#define QP_MIN_USAGE (QP_PAGE_SIZE - QP_PAGE_SIZE / 16)
-
-/*
- * Compactify proactively when we pass this threshold.
- */
-#define QP_MAX_GARBAGE (1U << 20)
+typedef struct qp_node {
+	uint32_t word[3];
+} qp_node;
 
 /*
  * In a branch the 64-bit word contains the tag, bitmap, and offset.
@@ -267,6 +192,69 @@ newleaf(const void *val, const void *ppd) {
 	assert(!isbranch(&leaf));
 	return(leaf);
 }
+
+/*
+ * Metadata for a qp-trie. The `root` and `base` members are used in
+ * the lookup fast path. The rest of the members of this structure
+ * support the allocator and garbage collector. The `base` and `usage`
+ * arrays are separate because `base` is hot and `usage` is cold
+ * (except during updates).
+ */
+struct qp {
+	/** number of leaf nodes */
+	qp_twig leaves;
+	/** the root node */
+	qp_node root;
+	/** array of pointers to pages */
+	qp_node **base;
+	/** array of per-page allocation counters */
+	struct qp_usage *usage;
+	/** number of pages in the arrays */
+	qp_page pages;
+	/** which page is used for allocations */
+	qp_page bump;
+	/** total of all usage[].free counters */
+	qp_twig garbage;
+	/** garbage collection performance summaries */
+	struct qp_stats gc_time, gc_space;
+};
+
+/*
+ * Number of nodes in a page. Should be a power of 2.
+ */
+#define QP_PAGE_SIZE (1U << 12)
+#define QP_PAGE_BYTES (QP_PAGE_SIZE * sizeof(qp_node))
+
+static inline qp_page refpage(qp_ref ref) { return(ref / QP_PAGE_SIZE); }
+
+static inline qp_twig reftwig(qp_ref ref) { return(ref % QP_PAGE_SIZE); }
+
+/*
+ * Convert a twig reference into a pointer.
+ */
+static inline qp_node *
+refptr(struct qp *qp, qp_ref ref) {
+	return(qp->base[refpage(ref)] + reftwig(ref));
+}
+
+/*
+ * How many twigs are actually in use in a page?
+ */
+static inline qp_twig
+pageusage(struct qp *qp, qp_page page) {
+	struct qp_usage usage = qp->usage[page];
+	return(usage.keep + usage.used - usage.free);
+}
+
+/*
+ * The page needs recycling if its usage is less than this threshold.
+ */
+#define QP_MIN_USAGE (QP_PAGE_SIZE - QP_PAGE_SIZE / 16)
+
+/*
+ * Compactify proactively when we pass this threshold.
+ */
+#define QP_MAX_GARBAGE (1U << 20)
 
 /*
  * Get a reference to a branch node's child twigs.
