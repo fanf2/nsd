@@ -61,8 +61,7 @@ typedef uint32_t qp_twig;
  *
  * A key is ephemeral, allocated on the stack during lookup.
  */
-#define QP_KEY_MAX 512
-typedef qp_shift qp_key[QP_KEY_MAX];
+typedef qp_shift qp_key[512];
 
 /*
  * Accumulators for measuring mean and standard deviation.
