@@ -257,7 +257,7 @@ pageusage(struct qp *qp, qp_page page) {
 /*
  * Compactify proactively when we pass this threshold.
  */
-#define QP_MAX_GARBAGE (1U << 24)
+#define QP_MAX_GARBAGE (1U << 20)
 
 /*
  * Get a reference to a branch node's child twigs.

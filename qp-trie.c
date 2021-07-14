@@ -56,6 +56,7 @@ qp_print_memstats(FILE *fp, struct qp *qp) {
 	size_t pages = qp->pages;
 	size_t total = 0;
 	size_t garbage = 0;
+	size_t garpage = 0;
 	struct qp_stats stats = { 0, 0, 0 };
 
 	for(qp_page p = 0; p < pages; p++) {
@@ -64,7 +65,8 @@ qp_print_memstats(FILE *fp, struct qp *qp) {
 		if(active)
 			stats_sample(&stats, used);
 		total += used;
-		garbage += active && used < QP_MIN_USAGE;
+		garbage += qp->usage[p].free;
+		garpage += active && used < QP_MIN_USAGE;
 	}
 
 	fprintf(fp, "%.0f/%zu entries in page table (%.2f%%)\n",
@@ -74,7 +76,8 @@ qp_print_memstats(FILE *fp, struct qp *qp) {
 		megabytes(stats.count * QP_PAGE_SIZE));
 	fprintf(fp, "average usage %.1f +/- %.1f (%.2f%%)\n",
 		stats.mean, stats_sd(stats), stats.mean * 100 / QP_PAGE_SIZE);
-	fprintf(fp, "%zu pages need GC\n", garbage);
+	fprintf(fp, "%zu pages need GC (%.2f MiB)\n",
+		garpage, megabytes(garbage));
 
 	fprintf(fp, "%.0f garbage collections (total %.1f ms)\n",
 		qp->gc_time.count, qp->gc_time.count * qp->gc_time.mean);
@@ -206,7 +209,21 @@ evacuate(struct qp *qp, qp_node *n, qp_node *twigs) {
 }
 
 /*
- * The copying part of our copying garbage collector.
+ * Twigs in a shared page need copy-on-write. As we walk down the tree,
+ * shared nodes near the root will get copied to fresh pages. Subsequent
+ * mutations will not need to copy so much.
+ */
+static inline void
+twigcow(struct qp *qp, struct qp_node *n) {
+	if(qp->usage[refpage(twigref(n))].keep != 0)
+		evacuate(qp, n, twigbase(qp, n));
+}
+
+/*
+ * The copying part of our copying garbage collector. SHIFT_OFFSET is
+ * also the size of the bitmap, so it is the maximum number of twigs.
+ * The maximum recursion depth is sizeof(qp_key). So the total stack
+ * usage is about 300 KiB.
  */
 static void
 defrag(struct qp *qp, qp_node *n) {
@@ -466,7 +483,7 @@ qp_del(struct qp *qp, const dname_type *dname) {
 		bit = twigbit(n, key, len);
 		if(!hastwig(n, bit))
 			return;
-		evacuate(qp, n, twigbase(qp, n));
+		twigcow(qp, n);
 		p = n; n = twig(qp, n, twigpos(n, bit));
 	}
 	if(!dname_equal(dname, leafname(n))) {
@@ -489,7 +506,7 @@ qp_del(struct qp *qp, const dname_type *dname) {
 		qp->leaves--;
 		garbage(qp, twigref(n), 2);
 	} else {
-		// shrink the twigs we just evacuated
+		// shrink the twigs in place
 		*n = newnode(node64(n) & ~(W1 << bit), twigref(n));
 		twigs = twigbase(qp, n);
 		twigmove(twigs+pos, twigs+pos+1, max-pos-1);
@@ -601,7 +618,7 @@ newkey:
 			goto newbranch;
 		if(off == keyoff(n))
 			goto growbranch;
-		evacuate(qp, n, twigbase(qp, n));
+		twigcow(qp, n);
 		bit = twigbit(n, newk, newl);
 		assert(hastwig(n, bit));
 		// keep track of adjacent nodes
