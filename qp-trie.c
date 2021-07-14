@@ -206,21 +206,53 @@ evacuate(struct qp *qp, qp_node *n, qp_node *twigs) {
 }
 
 /*
- * The copying part of our copying garbage collector.
+ * The copying part of our copying garbage collector. QP_KEY_MAX is
+ * also the maximum depth of the tree, and SHIFT_OFFSET is also the
+ * size of the bitmap which is the maximum width of a node. (Both are
+ * slight over-estimates.) The scratch space is 288 KiB.
  */
 static void
-defrag(struct qp *qp, qp_node *n) {
-	qp_node twigs[SHIFT_OFFSET];
-	qp_weight max = twigmax(n);
-	twigmove(twigs, twigbase(qp, n), max);
+defrag(struct qp *qp) {
+	const size_t space = QP_KEY_MAX * SHIFT_OFFSET;
+	qp_node *scratch = xalloc(space * sizeof(*scratch));
+	qp_node *twigs[QP_KEY_MAX];
+	qp_node *node[QP_KEY_MAX];
+	size_t sp = 0;
 
-	for(qp_weight i = 0; i < max; i++)
-		if(isbranch(&twigs[i]))
-			defrag(qp, &twigs[i]);
+	scratch[0] = qp->root;
+	node[sp] = &scratch[0]; /* copy of the current node */
+	twigs[sp] = &scratch[1]; /* copy of this node's twigs */
 
-	if(pageusage(qp, refpage(twigref(n))) < QP_MIN_USAGE
-	   || twigcmp(twigs, twigbase(qp, n), max) != 0)
-		evacuate(qp, n, twigs);
+	for(;;) {
+		if(node[sp] == twigs[sp]) {
+			/* pop the stack when the current node has
+			   scanned far enough to reach its own twigs */
+			if(sp == 0) break;
+			sp--;
+			/* do we need to move the twigs we just scanned? */
+			qp_node *n = node[sp];
+			qp_weight max = twigmax(n);
+			if(pageusage(qp, refpage(twigref(n))) < QP_MIN_USAGE
+			   || twigcmp(twigs[sp], twigbase(qp, n), max) != 0)
+				evacuate(qp, n, twigs[sp]);
+			/* done with this node */
+			node[sp]++;
+		} else if(isbranch(node[sp])) {
+			/* push a branch's twigs on the stack */
+			qp_weight max = twigmax(node[sp]);
+			twigmove(twigs[sp], twigbase(qp, node[sp]), max);
+			/* now scan the twigs */
+			sp++;
+			node[sp] = twigs[sp-1];
+			twigs[sp] = twigs[sp-1] + max;
+		} else	{
+			/* scan past leaves */
+			node[sp]++;
+		}
+	}
+
+	qp->root = scratch[0];
+	free(scratch);
 }
 
 /*
@@ -236,8 +268,7 @@ recycle(struct qp *qp, qp_node **later) {
 	qp_page pages = 0;
 
 	alloc_reset(qp);
-	if(isbranch(&qp->root))
-		defrag(qp, &qp->root);
+	defrag(qp);
 
 	for(qp_page p = 0; p < qp->pages; p++) {
 		if(p == qp->bump)
