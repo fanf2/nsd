@@ -42,8 +42,8 @@ static double
 stats_sd(struct qp_stats stats) {
 	double n = stats.var / stats.count;
 	double m = n / 2, y = n, x = m;
-	while(y != x) y = x, x = x/2 + m/x;
-	return(x);
+	while(n == n && y != x) y = x, x = x/2 + m/x;
+	return(x); /* sqrt(n) */
 }
 
 static double
@@ -82,13 +82,21 @@ qp_print_memstats(FILE *fp, struct qp *qp) {
 		qp->gc_time.mean, stats_sd(qp->gc_time));
 	fprintf(fp, "GC size %.1f +/- %.1f pages\n",
 		qp->gc_space.mean, stats_sd(qp->gc_space));
+	fprintf(fp, "GC late %.1f +/- %.1f pages\n",
+		qp->gc_later.mean, stats_sd(qp->gc_later));
 
 	size_t elemsz = sizeof(*qp->base) + sizeof(*qp->usage);
 	return(stats.count * QP_PAGE_BYTES + pages * elemsz);
 }
 
+/*
+ * A mashup of calloc() and realloc() without any free().
+ * See alloc_page() below for notes on xalloc().
+ */
 static void *
 clone(void *oldp, size_t oldsz, size_t newsz, size_t elemsz) {
+	assert((uint64_t)1 << 32 > (uint64_t)oldsz * elemsz);
+	assert((uint64_t)1 << 32 > (uint64_t)newsz * elemsz);
 	oldsz *= elemsz, newsz *= elemsz;
 	unsigned char *newp = xalloc(newsz);
 	size_t copysz = oldsz < newsz ? oldsz : newsz;
@@ -98,6 +106,14 @@ clone(void *oldp, size_t oldsz, size_t newsz, size_t elemsz) {
 	return(newp);
 }
 
+/*
+ * Create a fresh page and allocate some twigs from it.
+ *
+ * I'm mostly avoiding the region allocator because I want to be clear
+ * about the complete lifecycle of the memory managed by the qp-trie's
+ * allocator, including shared copy-on-write pages. In particular, see
+ * cleanup() below.
+ */
 static qp_ref
 alloc_page(struct qp *qp, qp_page page, qp_weight size) {
 	qp_node *twigs = xalloc(QP_PAGE_BYTES);
@@ -107,6 +123,9 @@ alloc_page(struct qp *qp, qp_page page, qp_weight size) {
 	return(QP_PAGE_SIZE * page);
 }
 
+/*
+ * Find a place to put a fresh page in the page table.
+ */
 static qp_ref
 alloc_slow(struct qp *qp, qp_weight size) {
 	for(qp_page p = qp->bump; p < qp->pages; p++)
@@ -137,6 +156,9 @@ alloc_reset(struct qp *qp) {
 	alloc_slow(qp, 0);
 }
 
+/*
+ * Allocate some fresh twigs.
+ */
 static inline qp_ref
 alloc(struct qp *qp, qp_weight size) {
 	qp_page page = qp->bump;
@@ -150,7 +172,7 @@ alloc(struct qp *qp, qp_weight size) {
 }
 
 /*
- * Make a note that these twigs are now garbage
+ * Discard some twigs without trying to clean up.
  */
 static inline void
 landfill(struct qp *qp, qp_ref twigs, qp_weight size) {
@@ -159,6 +181,9 @@ landfill(struct qp *qp, qp_ref twigs, qp_weight size) {
 	qp->garbage += size;
 }
 
+/*
+ * Discard some twigs and clean up if necessary.
+ */
 static inline void
 garbage(struct qp *qp, qp_ref twigs, qp_weight size) {
 	landfill(qp, twigs, size);
@@ -166,12 +191,13 @@ garbage(struct qp *qp, qp_ref twigs, qp_weight size) {
 		qp_compact(qp);
 }
 
-#define twigmove(p, q, max) memmove(p, q, (max) * sizeof(qp_node))
-#define twigdiff(p, q, max) memcmp(p, q, (max) * sizeof(qp_node))
-
+/*
+ * Move some twigs to a new page. The twigs pointer is normally
+ * twigbase(qp, n) except during garbage collection when the twigs
+ * are moved via a temporary copy.
+ */
 static inline void
 evacuate(struct qp *qp, qp_node *n, qp_node *twigs) {
-	if(twigs == NULL) twigs = twigbase(qp, n);
 	qp_weight max = twigmax(n);
 	qp_ref ref = alloc(qp, max);
 	landfill(qp, twigref(n), max);
@@ -179,6 +205,9 @@ evacuate(struct qp *qp, qp_node *n, qp_node *twigs) {
 	*n = newnode(node64(n), ref);
 }
 
+/*
+ * The copying part of our copying garbage collector.
+ */
 static void
 defrag(struct qp *qp, qp_node *n) {
 	qp_node twigs[SHIFT_OFFSET];
@@ -190,10 +219,17 @@ defrag(struct qp *qp, qp_node *n) {
 			defrag(qp, &twigs[i]);
 
 	if(pageusage(qp, refpage(twigref(n))) < QP_MIN_USAGE
-	   || twigdiff(twigs, twigbase(qp, n), max))
+	   || twigcmp(twigs, twigbase(qp, n), max) != 0)
 		evacuate(qp, n, twigs);
 }
 
+/*
+ * The garbage collector can either free unused pages immediately
+ * (which it does for on-demand collections) or when completing a COW
+ * transaction it can put them on a list to be dealt with after the
+ * old/new switch-over. The current allocation page is in use even if
+ * it is empty.
+ */
 static void
 recycle(struct qp *qp, qp_node **later) {
 	double start = doubletime();
@@ -223,11 +259,18 @@ recycle(struct qp *qp, qp_node **later) {
 	stats_sample(&qp->gc_space, pages);
 }
 
+/*
+ * GC right now.
+ */
 void
 qp_compact(struct qp *qp) {
 	recycle(qp, NULL);
 }
 
+/*
+ * A callback used by the region allocator.
+ * See alloc_page() above for a rationale.
+ */
 static void
 cleanup(void *vp) {
 	struct qp *qp = vp;
@@ -247,9 +290,8 @@ destroy(struct qp *qp, region_type *region) {
 
 void
 qp_destroy(struct qp_trie *t) {
-	if(t->cow)
-		destroy(t->cow, t->region);
-	destroy(t->qp, t->region);
+	if(t->cow) destroy(t->cow, t->region);
+	if(t->qp) destroy(t->qp, t->region);
 	t->region = NULL;
 	t->cow = NULL;
 	t->qp = NULL;
@@ -267,7 +309,7 @@ qp_init(struct qp_trie *t, region_type *region) {
 
 void
 qp_cow_start(struct qp_trie *t) {
-	/* TODO: take write lock */
+	/* TODO: take cow write lock */
 
 	region_type *region = t->region;
 	qp_page pages = t->qp->pages;
@@ -299,12 +341,19 @@ qp_cow_finish(struct qp_trie *t) {
 	qp_node **later = clone(NULL, 0, pages, sizeof(*later));
 	recycle(new, later);
 
-	/* TODO: atomic swap */
+	/* TODO: take qp write lock */
 	t->qp = new;
-	/* TODO: wait for readers */
+	/* TODO: release qp write lock */
 
-	for(qp_page p = 0; p < pages; p++)
-		free(later[p]);
+	qp_page late = 0;
+	for(qp_page p = 0; p < pages; p++) {
+		if(later[p] != NULL) {
+			free(later[p]);
+			++late;
+		}
+	}
+	stats_sample(&old->gc_later, late);
+
 	free(later);
 	free(old->base);
 	free(old->usage);
@@ -312,7 +361,7 @@ qp_cow_finish(struct qp_trie *t) {
 	region_remove_cleanup(region, cleanup, old);
 	t->cow = NULL;
 
-	/* TODO: release write lock */
+	/* TODO: release cow write lock */
 }
 
 uint32_t
@@ -417,7 +466,7 @@ qp_del(struct qp *qp, const dname_type *dname) {
 		bit = twigbit(n, key, len);
 		if(!hastwig(n, bit))
 			return;
-		evacuate(qp, n, NULL);
+		evacuate(qp, n, twigbase(qp, n));
 		p = n; n = twig(qp, n, twigpos(n, bit));
 	}
 	if(!dname_equal(dname, leafname(n))) {
@@ -552,7 +601,7 @@ newkey:
 			goto newbranch;
 		if(off == keyoff(n))
 			goto growbranch;
-		evacuate(qp, n, NULL);
+		evacuate(qp, n, twigbase(qp, n));
 		bit = twigbit(n, newk, newl);
 		assert(hastwig(n, bit));
 		// keep track of adjacent nodes

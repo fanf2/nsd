@@ -25,7 +25,8 @@ struct qp;
 struct qp_trie {
 	struct qp *qp, *cow;
 	region_type *region;
-	/* write lock goes here*/
+	/* TODO: qp reader/writer lock */
+	/* TODO: cow write lock */
 };
 
 /*

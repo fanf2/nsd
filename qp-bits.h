@@ -96,6 +96,9 @@ typedef struct qp_node {
 	uint32_t word[3];
 } qp_node;
 
+#define twigmove(p, q, max) memmove(p, q, (max) * sizeof(qp_node))
+#define  twigcmp(p, q, max)  memcmp(p, q, (max) * sizeof(qp_node))
+
 /*
  * In a branch the 64-bit word contains the tag, bitmap, and offset.
  * This enum sets up the bit positions of these parts.
@@ -216,7 +219,7 @@ struct qp {
 	/** total of all usage[].free counters */
 	qp_twig garbage;
 	/** garbage collection performance summaries */
-	struct qp_stats gc_time, gc_space;
+	struct qp_stats gc_time, gc_space, gc_later;
 };
 
 /*
