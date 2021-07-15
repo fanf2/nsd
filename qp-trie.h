@@ -89,12 +89,10 @@ int qp_find_le(struct qp *qp, const dname_type *dname, void **val);
 void qp_foreach(struct qp *qp, void (*fn)(void *val, void *ctx), void *ctx);
 
 /*
- * Copy fragmented pages of the tree to new tightly-packed pages, and
- * free any unused pages. This is normally not necessary since the
- * tree will be compacted automatically when the garbage passes a
- * threshold.
+ * Collect garbage and ensure the given number of nodes are free for
+ * allocation. (e.g. qp_compact(t->cow, 0); qp_cow_finish(t);).
  */
-void qp_compact(struct qp *qp);
+void qp_compact(struct qp *qp, uint32_t space);
 
 /*
  * Print memory statistics, and return the total bytes used.

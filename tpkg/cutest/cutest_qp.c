@@ -99,10 +99,10 @@ qp_check(struct qp *qp) {
 	if(fast) return;
 	if(qp->leaves == 0) {
 		CuAssert(tc, "check empty node",
-			 node64(&qp->root) == 0 &&
-			 node32(&qp->root) == 0);
+			 node64(qp->base) == 0 &&
+			 node32(qp->base) == 0);
 	} else {
-		qp_check_node(qp, &qp->root, &ctx, 0);
+		qp_check_node(qp, qp->base, &ctx, 0);
 		CuAssert(tc, "check count", ctx.count == qp->leaves);
 		CuAssertPtrEq(tc, "check last item",
 			      ctx.next, NULL);
@@ -156,7 +156,7 @@ qp_dump(struct qp *qp, qp_node *n, int d) {
 		printf("qp_dump%*s branch %p %zu ", d, "", n, keyoff(n));
 		print_bitmap(n);
 		dd = (int)keyoff(n) * 2 + 2;
-		assert(dd > d);
+		CuAssert(tc, "check depth", dd > d);
 		for(bit = SHIFT_NOBYTE; bit < SHIFT_OFFSET; bit++) {
 			if(hastwig(n, bit)) {
 				printf("qp_dump%*s twig ", d, "");
@@ -249,7 +249,7 @@ add_elem(region_type *region, struct qp *qp, const dname_type *dname) {
 		e->next->prev = e;
 	}
 
-	if(v) qp_dump(qp, &qp->root, 0);
+	if(v) qp_dump(qp, qp->base, 0);
 	qp_check(qp);
 
 	return(e);
@@ -284,7 +284,7 @@ del_elem(region_type *region, struct qp *qp, struct elem *e) {
 	recycle_dname(region, e->dname);
 	region_recycle(region, e, sizeof(*e));
 
-	if(v) qp_dump(qp, &qp->root, 0);
+	if(v) qp_dump(qp, qp->base, 0);
 	qp_check(qp);
 }
 
@@ -352,7 +352,7 @@ cutest_qp(CuTest *ttc)
 			CuAssertPtrEq(tc, "elem_looper expected last",
 				      e, NULL);
 		} else if(r < 65) {
-			qp_compact(qp);
+			qp_compact(qp, QP_ALLOC_MORE(qp));
 			qp_check(qp);
 		} else if(r < 70) {
 			if(t.cow == NULL) {
@@ -406,7 +406,7 @@ cutest_qp(CuTest *ttc)
 
 	if(t.cow != NULL)
 		qp_cow_finish(&t);
-	//qp_print_memstats(stdout, t.qp);
+	if(v) qp_print_memstats(stdout, t.qp);
 	fflush(stdout);
 	while(first != NULL) {
 		e = first;

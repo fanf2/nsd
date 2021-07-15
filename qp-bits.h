@@ -35,19 +35,13 @@ typedef uint8_t qp_shift;
 
 /*
  * Type of twig references.
- * qp_ref == QP_PAGE_SIZE * qp_page + qp_twig
  */
 typedef uint32_t qp_ref;
 
 /*
- * Type of page indexes.
+ * Type of twig counts..
  */
-typedef uint32_t qp_page;
-
-/*
- * Type of twig offsets / counters.
- */
-typedef uint32_t qp_twig;
+typedef uint32_t qp_size;
 
 /*
  * Type of a trie lookup key.
@@ -71,13 +65,34 @@ struct qp_stats {
 };
 
 /*
- * Per-page allocation counters. The `used` and `free` counters increase
- * monotonically; the `used` counter is also the allocation point.
+ * Metadata for a qp-trie. The root node is base[0]. Most of the members of
+ * this structure support the allocator and garbage collector.
  */
-struct qp_usage {
-	qp_twig used, free;
-	bool shared;
+struct qp {
+	/** node refs are relative to this pointer */
+	struct qp_node *base;
+	/** allocation position */
+	qp_ref bump;
+	/** allocation limit */
+	qp_size space;
+	/** amount of garbage */
+	qp_size garbage;
+	/** number of leaf nodes */
+	qp_size leaves;
+	/** garbage collection performance summaries */
+	struct qp_stats gc_time, gc_space;
 };
+
+/*
+ * Allocations should be a nice round number of nodes.
+ */
+#define QP_QUANTUM ((qp_size)(1<<16)-1)
+#define QP_ALLOC_ROUND(size) (((size) + QP_QUANTUM) & ~QP_QUANTUM)
+
+/*
+ * How much free space to allow after compaction.
+ */
+#define QP_ALLOC_MORE(qp) (TWIGMAX + (qp->bump - qp->garbage) / 8)
 
 /*
  * A qp-trie node can be a leaf or a branch. It consists of three
@@ -97,7 +112,6 @@ typedef struct qp_node {
 } qp_node;
 
 #define twigmove(p, q, max) memmove(p, q, (max) * sizeof(qp_node))
-#define  twigcmp(p, q, max)  memcmp(p, q, (max) * sizeof(qp_node))
 
 /*
  * In a branch the 64-bit word contains the tag, bitmap, and offset.
@@ -127,6 +141,11 @@ enum {
 #define BRANCH_TAG (1U << SHIFT_BRANCH)
 
 /*
+ * Maximum number of twigs in a node is the same as the bitmap size.
+ */
+#define TWIGMAX (SHIFT_OFFSET - SHIFT_NOBYTE)
+
+/*
  * Test a node's tag bit.
  */
 static inline bool
@@ -135,7 +154,7 @@ isbranch(qp_node *n) {
 }
 
 /*
- * Get the 64-bit word of a node.
+ * Get the 64-bit word of a node. Maybe suboptimal on bigendian machines.
  */
 static inline uint64_t
 node64(qp_node *n) {
@@ -197,84 +216,11 @@ newleaf(const void *val, const void *ppd) {
 }
 
 /*
- * Metadata for a qp-trie. The `root` and `base` members are used in
- * the lookup fast path. The rest of the members of this structure
- * support the allocator and garbage collector. The `base` and `usage`
- * arrays are separate because `base` is hot and `usage` is cold
- * (except during updates).
- */
-struct qp {
-	/** number of leaf nodes */
-	qp_twig leaves;
-	/** the root node */
-	qp_node root;
-	/** array of pointers to pages */
-	qp_node **base;
-	/** array of per-page allocation counters */
-	struct qp_usage *usage;
-	/** array of pages to be freed */
-	void **later;
-	/** number of pages in the arrays */
-	qp_page pages;
-	/** which page is used for allocations */
-	qp_page bump;
-	/** total of all usage[].free counters */
-	qp_twig garbage;
-	/** garbage collection performance summaries */
-	struct qp_stats gc_time, gc_space, gc_later, gc_after;
-};
-
-/*
- * Number of nodes in a page. Should be a power of 2.
- */
-#define QP_PAGE_SIZE (1U << 12)
-#define QP_PAGE_BYTES (QP_PAGE_SIZE * sizeof(qp_node))
-
-static inline qp_page refpage(qp_ref ref) { return(ref / QP_PAGE_SIZE); }
-
-static inline qp_twig reftwig(qp_ref ref) { return(ref % QP_PAGE_SIZE); }
-
-/*
- * Convert a twig reference into a pointer.
- */
-static inline qp_node *
-refptr(struct qp *qp, qp_ref ref) {
-	return(qp->base[refpage(ref)] + reftwig(ref));
-}
-
-/*
- * How many twigs are actually in use in a page?
- */
-static inline qp_twig
-pageusage(struct qp *qp, qp_page page) {
-	struct qp_usage usage = qp->usage[page];
-	return(usage.used - usage.free);
-}
-
-/*
- * The page needs recycling if its usage is less than this threshold.
- */
-#define QP_MIN_USAGE (QP_PAGE_SIZE - QP_PAGE_SIZE / 8)
-
-/*
- * Compactify proactively when we pass this threshold.
- */
-#define QP_MAX_GARBAGE (1U << 20)
-
-/*
  * Get a reference to a branch node's child twigs.
  */
 static inline qp_ref
 twigref(qp_node *n) {
 	return(node32(n));
-}
-
-/*
- * Get a pointer to a branch node's child twigs.
- */
-static inline qp_node *
-twigbase(struct qp *qp, qp_node *n) {
-	return(refptr(qp, twigref(n)));
 }
 
 /*
@@ -340,7 +286,7 @@ twigpos(qp_node *n, qp_shift bit) {
  */
 static inline qp_node *
 twig(struct qp *qp, qp_node *n, qp_weight pos) {
-	return(twigbase(qp, n) + pos);
+	return(qp->base + twigref(n) + pos);
 }
 
 /*

@@ -174,7 +174,7 @@ int main(int argc, char *argv[])
   }
 
 #ifdef TREEPERF_USE_QP
-  qp_compact(table->nametree.qp);
+  qp_compact(table->nametree.qp, 0);
 #endif
 
   get_time(&tv);
