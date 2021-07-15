@@ -90,7 +90,9 @@ void qp_foreach(struct qp *qp, void (*fn)(void *val, void *ctx), void *ctx);
 
 /*
  * Copy fragmented pages of the tree to new tightly-packed pages, and
- * free any unused pages.
+ * free any unused pages. This is normally not necessary since the
+ * tree will be compacted automatically when the garbage passes a
+ * threshold.
  */
 void qp_compact(struct qp *qp);
 

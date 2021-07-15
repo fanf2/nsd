@@ -315,6 +315,7 @@ cutest_qp(CuTest *ttc)
 {
 	struct region *region = region_create(xalloc, free);
 	struct qp_trie t;
+	struct qp *qp;
 	struct elem *first, *e;
 	const dname_type *dname;
 	void *val;
@@ -323,12 +324,13 @@ cutest_qp(CuTest *ttc)
 	tc = ttc;
 
 	qp_init(&t, region);
+	qp = t.qp;
 
 	first = NULL;
-	for(i = 0; i < 10000; i++) {
-		switch(random_generate(5)) {
-		case(0):
-			e = add_random_elem(region, t.qp);
+	for(i = 1; i <= 10000; i++) {
+		int r = random_generate(100);
+		if(qp->leaves / 1000 < (unsigned)r && r < 50) {
+			e = add_random_elem(region, qp);
 			if(e->prev == NULL && first != NULL) {
 				CuAssertPtrEq(tc, "new elem before first",
 					      first->prev, e);
@@ -337,26 +339,31 @@ cutest_qp(CuTest *ttc)
 			}
 			if(e->prev == NULL)
 				first = e;
-			continue;
-		case(1):
+		} else if(r < 50) {
 			e = random_elem(first);
 			if(e != NULL) {
 				if(e == first)
 					first = e->next;
-				del_elem(region, t.qp, e);
+				del_elem(region, qp, e);
 			}
-			continue;
-		case(2):
+		} else if(r < 60) {
 			e = first;
-			qp_foreach(t.qp, elem_looper, &e);
+			qp_foreach(qp, elem_looper, &e);
 			CuAssertPtrEq(tc, "elem_looper expected last",
 				      e, NULL);
-			continue;
-		case(3):
-			qp_compact(t.qp);
-			qp_check(t.qp);
-			continue;
-		case(4):
+		} else if(r < 65) {
+			qp_compact(qp);
+			qp_check(qp);
+		} else if(r < 70) {
+			if(t.cow == NULL) {
+				qp_cow_start(&t);
+				qp = t.cow;
+			} else {
+				qp_cow_finish(&t);
+				qp = t.qp;
+			}
+			qp_check(qp);
+		} else {
 			if(random_generate(5) == 0)
 				dname = wildcard_dname(region);
 			else
@@ -365,7 +372,7 @@ cutest_qp(CuTest *ttc)
 				printf("qp_find_le search %s\n",
 				       dname_to_string(dname, NULL));
 			}
-			if(qp_find_le(t.qp, dname, &val)) {
+			if(qp_find_le(qp, dname, &val)) {
 				e = val;
 				CuAssert(tc, "qp_find_le exact",
 					 dname_compare(dname, e->dname) == 0);
@@ -394,12 +401,13 @@ cutest_qp(CuTest *ttc)
 					 dname_compare(dname, first->dname) < 0);
 			}
 			recycle_dname(region, dname);
-			continue;
-		default:
-			assert(0);
 		}
 	}
 
+	if(t.cow != NULL)
+		qp_cow_finish(&t);
+	//qp_print_memstats(stdout, t.qp);
+	fflush(stdout);
 	while(first != NULL) {
 		e = first;
 		first = e->next;

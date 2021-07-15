@@ -13,10 +13,55 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include <sys/mman.h>
+
 #include "dname.h"
 #include "namedb.h"
 #include "qp-trie.h"
 #include "qp-bits.h"
+
+#if USE_PROTECTION
+
+/*
+ * In debug mode, during a COW transaction,
+ * ensure that the shared pages are not modified.
+ */
+static void
+protect_cow(struct qp *qp, int prot) {
+	for(qp_page p = 0; p < qp->pages; p++) {
+		if(qp->base[p] != NULL &&
+		   mprotect(qp->base[p], QP_PAGE_BYTES, prot) < 0) {
+			log_msg(LOG_ERR, "mprotect: %s", strerror(errno));
+			exit(1);
+		}
+	}
+}
+
+static void *
+protect_alloc(void) {
+	void *ptr = mmap(NULL, QP_PAGE_BYTES, PROT_READ|PROT_WRITE,
+			 MAP_ANON|MAP_PRIVATE, -1, 0);
+	if(ptr != MAP_FAILED)
+		return(ptr);
+	log_msg(LOG_ERR, "mmap: %s", strerror(errno));
+	exit(1);
+}
+
+static void
+protect_free(void *ptr) {
+	if(munmap(ptr, QP_PAGE_BYTES) == 0)
+		return;
+	log_msg(LOG_ERR, "munmap: %s", strerror(errno));
+	exit(1);
+}
+
+#else
+
+#define protect_alloc() xalloc(QP_PAGE_BYTES)
+#define protect_free(ptr) free(ptr)
+#define protect_cow(qp, prot)
+
+#endif
 
 static double doubletime(void) {
 	struct timespec t;
@@ -87,6 +132,8 @@ qp_print_memstats(FILE *fp, struct qp *qp) {
 		qp->gc_space.mean, stats_sd(qp->gc_space));
 	fprintf(fp, "GC late %.1f +/- %.1f pages\n",
 		qp->gc_later.mean, stats_sd(qp->gc_later));
+	fprintf(fp, "GC after %.1f +/- %.1f pages\n",
+		qp->gc_after.mean, stats_sd(qp->gc_after));
 
 	size_t elemsz = sizeof(*qp->base) + sizeof(*qp->usage);
 	return(stats.count * QP_PAGE_BYTES + pages * elemsz);
@@ -114,12 +161,12 @@ clone(void *oldp, size_t oldsz, size_t newsz, size_t elemsz) {
  *
  * I'm mostly avoiding the region allocator because I want to be clear
  * about the complete lifecycle of the memory managed by the qp-trie's
- * allocator, including shared copy-on-write pages. In particular, see
+ * allocator, especially shared copy-on-write pages. In particular, see
  * cleanup() below.
  */
 static qp_ref
 alloc_page(struct qp *qp, qp_page page, qp_weight size) {
-	qp_node *twigs = xalloc(QP_PAGE_BYTES);
+	qp_node *twigs = protect_alloc();
 	qp->base[page] = twigs;
 	qp->usage[page].used = size;
 	qp->bump = page;
@@ -139,15 +186,18 @@ alloc_slow(struct qp *qp, qp_weight size) {
 			return(alloc_page(qp, p, size));
 
 	qp_page last = qp->pages;
-	qp_page pages = last + last/2 + 1;
+	qp->pages = last + last/2 + 1;
 	qp_node **base = qp->base;
-	struct qp_usage *usage = qp->usage;
-	qp->base = clone(base, last, pages, sizeof(*base));
-	qp->usage = clone(usage, last, pages, sizeof(*usage));
-	qp->pages = pages;
+	qp->base = clone(base, last, qp->pages, sizeof(*base));
 	free(base);
+	struct qp_usage *usage = qp->usage;
+	qp->usage = clone(usage, last, qp->pages, sizeof(*usage));
 	free(usage);
-
+	void **later = qp->later;
+	if(later != NULL) {
+		qp->later = clone(later, last, qp->pages, sizeof(void*));
+		free(later);
+	}
 	return(alloc_page(qp, last, size));
 }
 
@@ -182,6 +232,7 @@ landfill(struct qp *qp, qp_ref twigs, qp_weight size) {
 	qp_page page = refpage(twigs);
 	qp->usage[page].free += size;
 	qp->garbage += size;
+	assert(qp->usage[page].free <= qp->usage[page].used);
 }
 
 /*
@@ -215,7 +266,7 @@ evacuate(struct qp *qp, qp_node *n, qp_node *twigs) {
  */
 static inline void
 twigcow(struct qp *qp, struct qp_node *n) {
-	if(qp->usage[refpage(twigref(n))].keep != 0)
+	if(qp->usage[refpage(twigref(n))].shared)
 		evacuate(qp, n, twigbase(qp, n));
 }
 
@@ -247,26 +298,29 @@ defrag(struct qp *qp, qp_node *n) {
  * old/new switch-over. The current allocation page is in use even if
  * it is empty.
  */
-static void
-recycle(struct qp *qp, qp_node **later) {
+void
+qp_compact(struct qp *qp) {
 	double start = doubletime();
 	qp_page pages = 0;
+	qp_twig after = 0;
 
 	alloc_reset(qp);
 	if(isbranch(&qp->root))
 		defrag(qp, &qp->root);
+	qp->garbage = 0;
 
 	for(qp_page p = 0; p < qp->pages; p++) {
-		if(p == qp->bump)
+		if(p == qp->bump
+		   || qp->usage[p].shared
+		   || pageusage(qp, p) > 0) {
+			after += qp->usage[p].free;
 			continue;
-		if(pageusage(qp, p) > 0)
-			continue;
-		if(later != NULL)
-			later[p] = qp->base[p];
+		}
+		if(qp->later != NULL)
+			qp->later[p] = qp->base[p];
 		else
-			free(qp->base[p]);
+			protect_free(qp->base[p]);
 		qp->base[p] = NULL;
-		qp->garbage -= qp->usage[p].free;
 		memset(&qp->usage[p], 0, sizeof(qp->usage[p]));
 		++pages;
 	}
@@ -274,14 +328,7 @@ recycle(struct qp *qp, qp_node **later) {
 	double end = doubletime();
 	stats_sample(&qp->gc_time, (end - start) * 1000);
 	stats_sample(&qp->gc_space, pages);
-}
-
-/*
- * GC right now.
- */
-void
-qp_compact(struct qp *qp) {
-	recycle(qp, NULL);
+	stats_sample(&qp->gc_after, (double)after / QP_PAGE_SIZE);
 }
 
 /*
@@ -292,10 +339,11 @@ static void
 cleanup(void *vp) {
 	struct qp *qp = vp;
 	for(qp_page p = 0; p < qp->pages; p++)
-		if(qp->usage[p].keep == 0)
-			free(qp->base[p]);
+		if(!qp->usage[p].shared)
+			protect_free(qp->base[p]);
 	free(qp->base);
 	free(qp->usage);
+	free(qp->later);
 }
 
 static void
@@ -338,7 +386,8 @@ qp_cow_start(struct qp_trie *t) {
 	new->usage = clone(old->usage, pages, pages, sizeof(*old->usage));
 
 	for(qp_page p = 0; p < pages; p++)
-		new->usage[p].keep = new->usage[p].used;
+		new->usage[p].shared = true;
+	protect_cow(new, PROT_READ);
 
 	alloc_reset(new);
 	region_add_cleanup(region, cleanup, new);
@@ -353,25 +402,28 @@ qp_cow_finish(struct qp_trie *t) {
 	qp_page pages = new->pages;
 
 	for(qp_page p = 0; p < pages; p++)
-		new->usage[p].keep = 0;
+		new->usage[p].shared = false;
 
-	qp_node **later = clone(NULL, 0, pages, sizeof(*later));
-	recycle(new, later);
+	new->later = clone(NULL, 0, pages, sizeof(void*));
+	if(new->garbage > QP_MAX_GARBAGE)
+		qp_compact(new);
 
 	/* TODO: take qp write lock */
 	t->qp = new;
 	/* TODO: release qp write lock */
 
-	qp_page late = 0;
+	protect_cow(new, PROT_READ|PROT_WRITE);
+	qp_page belated = 0;
 	for(qp_page p = 0; p < pages; p++) {
-		if(later[p] != NULL) {
-			free(later[p]);
-			++late;
+		if(new->later[p] != NULL) {
+			protect_free(new->later[p]);
+			belated++;
 		}
 	}
-	stats_sample(&old->gc_later, late);
+	free(new->later);
+	new->later = NULL;
+	stats_sample(&new->gc_later, belated);
 
-	free(later);
 	free(old->base);
 	free(old->usage);
 	region_recycle(region, old, sizeof(*old));
@@ -477,6 +529,7 @@ qp_del(struct qp *qp, const dname_type *dname) {
 	size_t len = dname_to_key(dname, key);
 	qp_shift bit = 0;
 	qp_weight pos, max;
+	qp_ref ref;
 	qp_node *twigs;
 	qp_node *p = NULL;
 	while(isbranch(n)) {
@@ -500,18 +553,19 @@ qp_del(struct qp *qp, const dname_type *dname) {
 	assert(bit != 0);
 	pos = twigpos(n, bit);
 	max = twigmax(n);
+	ref = twigref(n);
 	if(max == 2) {
 		// move the other twig to the parent branch.
 		*n = *twig(qp, n, !pos);
 		qp->leaves--;
-		garbage(qp, twigref(n), 2);
+		garbage(qp, ref, 2);
 	} else {
 		// shrink the twigs in place
 		*n = newnode(node64(n) & ~(W1 << bit), twigref(n));
 		twigs = twigbase(qp, n);
 		twigmove(twigs+pos, twigs+pos+1, max-pos-1);
 		qp->leaves--;
-		garbage(qp, twigref(n), 1);
+		garbage(qp, ref, 1);
 	}
 }
 

@@ -71,12 +71,12 @@ struct qp_stats {
 };
 
 /*
- * Per-page allocation counters. The `used` and `free` counters
- * increase monotonically; the `used` counter is also the allocation
- * point. The `keep` counter is non-zero when the page is shared.
+ * Per-page allocation counters. The `used` and `free` counters increase
+ * monotonically; the `used` counter is also the allocation point.
  */
 struct qp_usage {
-	qp_twig keep, used, free;
+	qp_twig used, free;
+	bool shared;
 };
 
 /*
@@ -212,6 +212,8 @@ struct qp {
 	qp_node **base;
 	/** array of per-page allocation counters */
 	struct qp_usage *usage;
+	/** array of pages to be freed */
+	void **later;
 	/** number of pages in the arrays */
 	qp_page pages;
 	/** which page is used for allocations */
@@ -219,7 +221,7 @@ struct qp {
 	/** total of all usage[].free counters */
 	qp_twig garbage;
 	/** garbage collection performance summaries */
-	struct qp_stats gc_time, gc_space, gc_later;
+	struct qp_stats gc_time, gc_space, gc_later, gc_after;
 };
 
 /*
@@ -246,7 +248,7 @@ refptr(struct qp *qp, qp_ref ref) {
 static inline qp_twig
 pageusage(struct qp *qp, qp_page page) {
 	struct qp_usage usage = qp->usage[page];
-	return(usage.keep + usage.used - usage.free);
+	return(usage.used - usage.free);
 }
 
 /*
